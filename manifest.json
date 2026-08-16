@@ -1,0 +1,17 @@
+{
+  "name": "OmniTalk - Global AI Messenger & Workspace",
+  "short_name": "OmniTalk",
+  "description": "Cross-Language Real-Time AI Chat, Team Collaboration & Translation Suite",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0B0F19",
+  "theme_color": "#10B981",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
