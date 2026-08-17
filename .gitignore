@@ -1,1 +1,7 @@
+# The real Firebase config — generated at deploy time by GitHub Actions
+# from firebase-config.template.js + repo Secrets. Never commit the real
+# one.
+firebase-config.js
 
+.env
+.env.*
