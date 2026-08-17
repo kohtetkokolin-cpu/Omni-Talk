@@ -28,13 +28,50 @@ function isFirebaseConfigured(){
          !FIREBASE_CONFIG.apiKey.includes('YOUR_FIREBASE_API_KEY');
 }
 
+/* Maps a raised error (Firebase SDK error, or a plain string reason we
+   detected ourselves) to a specific, actionable message — instead of
+   silently falling back to local demo mode with no explanation, which
+   made every setup problem indistinguishable from "not configured yet". */
+function fbFriendlyInitError(e){
+  const code = (e && e.code) || '';
+  const msg = (e && e.message) || String(e || '');
+  if(code === 'auth/operation-not-allowed' || /operation-not-allowed/i.test(msg)){
+    return 'Firebase Console → Authentication → Sign-in method → "Anonymous" ကို Enable လုပ်ဖို့ လိုပါတယ်။';
+  }
+  if(code === 'auth/configuration-not-found' || /configuration-not-found/i.test(msg)){
+    return 'Firebase Console → Authentication ကို "Get started" နှိပ်ပြီး setup လုပ်ဖို့ လိုပါတယ် (Authentication တစ်ခါမှ မဖွင့်ရသေးဘူးဖြစ်နိုင်ပါတယ်)။';
+  }
+  if(code === 'auth/invalid-api-key' || code === 'auth/api-key-not-valid' || /api key not valid/i.test(msg)){
+    return 'firebase-config.js ထဲက apiKey မှားနေနိုင်ပါတယ် — Firebase Console → Project Settings → Your apps ထဲက value ကို ပြန်ကူးထည့်ကြည့်ပါ။';
+  }
+  if(/auth\/unauthorized-domain/i.test(msg) || code === 'auth/unauthorized-domain'){
+    return 'ဒီ website domain ကို Firebase Console → Authentication → Settings → Authorized domains ထဲမှာ ထည့်ဖို့ လိုပါတယ်။';
+  }
+  if(code === 'permission-denied' || /Missing or insufficient permissions/i.test(msg)){
+    return 'Firestore Security Rules က ပိတ်ထားနိုင်ပါတယ် — Firebase Console → Firestore Database → Rules ထဲမှာ FIREBASE_SETUP.md ပါ rules ကို ထည့်ပြီး Publish နှိပ်ထားလား စစ်ပါ။';
+  }
+  if(code === 'not-found' || /NOT_FOUND|does not exist/i.test(msg)){
+    return 'Firestore Database ကို Firebase Console → Firestore Database ထဲမှာ "Create database" နှိပ်ပြီး ဖန်တီးဖို့ လိုပါတယ် (config ထည့်ရုံနဲ့ database အလိုအလျောက် ဖြစ်မလာပါ)။';
+  }
+  if(/projectId|project-not-found|Failed to get document because the client is offline/i.test(msg)){
+    return 'projectId (သို့) authDomain မှားနေနိုင်ပါတယ် — Firebase Console ထဲက value တွေနဲ့ ပြန်နှိုင်းစစ်ပါ။';
+  }
+  return `Firebase error: ${code || msg || 'unknown'}`;
+}
+
 /** Initialize Firebase & Profile */
 async function fbInit(){
   activeReadingLang = (typeof state !== 'undefined' && state.uiLanguage) || 'my';
   const langSelect = document.getElementById('chatReadingLangSelect');
   if(langSelect) langSelect.value = activeReadingLang;
 
-  if(typeof firebase === 'undefined' || !isFirebaseConfigured()){
+  if(typeof firebase === 'undefined'){
+    console.warn('Firebase SDK scripts did not load — check your internet connection or whether gstatic.com is blocked on this network.');
+    if(typeof showToast === 'function') showToast('Firebase SDK မ load ဖြစ်ပါ — internet connection (သို့) network firewall ကို စစ်ပေးပါ။ လောလောဆယ် Local mode နဲ့ ဆက်သုံးနေပါမယ်။', 'warn');
+    setupLocalDemoUser('SDK failed to load (network/firewall?)');
+    return false;
+  }
+  if(!isFirebaseConfigured()){
     setupLocalDemoUser();
     return false;
   }
@@ -62,15 +99,25 @@ async function fbInit(){
       currentUser = { uid, ...userDoc.data() };
     }
     renderMyProfileCard();
+    fbSetStatusBadge('🟢 Connected', '#34D399');
     return true;
   }catch(e){
     console.error('Firebase init error:', e);
-    setupLocalDemoUser();
+    const reason = fbFriendlyInitError(e);
+    if(typeof showToast === 'function') showToast('⚠️ Firebase ချိတ်ဆက်လို့ မရသေးပါ — ' + reason, 'error');
+    setupLocalDemoUser(reason);
     return false;
   }
 }
 
-function setupLocalDemoUser(){
+function fbSetStatusBadge(text, color){
+  const badge = document.getElementById('firebaseStatusBadge');
+  if(!badge) return;
+  badge.textContent = text;
+  badge.style.color = color;
+}
+
+function setupLocalDemoUser(reason){
   let localUid = localStorage.getItem('ot_demo_uid');
   let localCode = localStorage.getItem('ot_demo_code');
   if(!localUid || !localCode){
@@ -86,6 +133,7 @@ function setupLocalDemoUser(){
   };
   renderMyProfileCard();
   setupDemoChats();
+  fbSetStatusBadge(reason ? `⚠️ Local mode — ${reason}` : '⚪ Local mode (not configured)', '#FBBF24');
 }
 
 function renderMyProfileCard(){
