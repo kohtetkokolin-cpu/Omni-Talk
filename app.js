@@ -391,6 +391,24 @@ function wkResolveModel(modelId){
   if(validModels.includes(modelId)) return modelId;
   return 'gemini-2.5-flash'; // safe current default for any unknown/retired id
 }
+/* gemini-1.5-* models predate "thinking" entirely and reject a thinkingConfig
+   field outright, while all 2.5-series models require thinkingBudget (not
+   thinkingLevel, which only 3.x models support) — build the right shape here
+   so every call site stays correct regardless of which model is selected. */
+function wkThinkingConfig(model){
+  return model.startsWith('gemini-1.5') ? {} : { thinkingConfig: { thinkingBudget: 0 } };
+}
+/* Lightweight script-based language guess, used only when the AI call that
+   would normally auto-detect the source language has failed and we must
+   still pick SOME source language for the offline dictionary / MyMemory
+   fallback — guessing by Unicode script is far more accurate than assuming
+   English, which was previously mangling non-Latin input in the fallback. */
+function wkGuessScriptLang(text){
+  if(/[\u1000-\u109F]/.test(text)) return 'my';
+  if(/[\u0E00-\u0E7F]/.test(text)) return 'th';
+  if(/[\u4E00-\u9FFF]/.test(text)) return 'zh';
+  return 'en';
+}
 
 /* =========================================================
    1. WALKIE-TALKIE — full engine ported from Walkie-Talkie
@@ -563,7 +581,7 @@ async function wkProcessRetryQueue(){
     try{
       const resp = await wkGeminiFetch(state.aiModel, {
         contents: [{ parts: [{ text: wkBuildTranslationPrompt(item.rawText, sourceLang, targetLang) }] }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'minimal' } }
+        generationConfig: { temperature: 0.4, maxOutputTokens: 2048, ...wkThinkingConfig(state.aiModel) }
       });
       if(resp.ok){
         const data = await resp.json();
@@ -798,7 +816,7 @@ async function wkHandleTranslation(rawText, sender, isVoice){
       let streamStructureReady = false;
       const streamResult = await wkGeminiFetchStream(state.aiModel, {
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'minimal' } }
+        generationConfig: { temperature: 0.4, maxOutputTokens: 2048, ...wkThinkingConfig(state.aiModel) }
       }, (partialText) => {
         const liveMsg = state.messages.find(m => m.id === msgId);
         if(!liveMsg) return;
@@ -881,7 +899,7 @@ async function wkScanAndTranslate(file, side){
       + `Respond in EXACTLY this format with no extra commentary:\nORIGINAL: <the text you read>\nTRANSLATED: <the natural translation into ${targetLang.name}>`;
     const resp = await wkGeminiFetch(state.aiModel, {
       contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: file.type || 'image/jpeg', data: base64 } }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'minimal' }, mediaResolution: 'MEDIA_RESOLUTION_MEDIUM' }
+      generationConfig: { temperature: 0.3, maxOutputTokens: 2048, ...wkThinkingConfig(state.aiModel), mediaResolution: 'MEDIA_RESOLUTION_MEDIUM' }
     });
     if(!resp.ok){
       showToast(`${t('toastScanFailed')} (Error ${resp.status})`, 'error');
@@ -1394,9 +1412,11 @@ async function qtTranslate(rawText, queryLabel){
 
   async function qtFallback(){
     usedOffline = true;
-    const remembered = wkTmLookup('auto', targetLang.code, rawText);
+    const guessedSource = wkGuessScriptLang(rawText);
+    detectedLang = (langByCode(guessedSource) || {}).name || '';
+    const remembered = wkTmLookup('auto', targetLang.code, rawText) || wkTmLookup(guessedSource, targetLang.code, rawText);
     if(remembered){ translatedText = remembered; approx = false; return; }
-    const result = await wkFallbackTranslateChain(rawText, 'en', targetLang.code);
+    const result = await wkFallbackTranslateChain(rawText, guessedSource, targetLang.code);
     if(result){ translatedText = result.text; approx = result.approx; usedMyMemory = result.usedMyMemory; }
     else { translatedText = `[Offline] ${rawText}`; approx = true; }
   }
@@ -1419,7 +1439,7 @@ async function qtTranslate(rawText, queryLabel){
       let qtStreamStructureReady = false;
       const streamResult = await wkGeminiFetchStream(state.aiModel, {
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.4, maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'minimal' } }
+        generationConfig: { temperature: 0.4, maxOutputTokens: 2048, ...wkThinkingConfig(state.aiModel) }
       }, (partialRaw) => {
         const partialMatch = partialRaw.match(/TRANSLATION:\s*([\s\S]*)/i);
         if(partialMatch){
@@ -1481,7 +1501,7 @@ async function qtHandleVoiceHold(blob){
         { text: prompt },
         { inline_data: { mime_type: blob.type || 'audio/webm', data: base64 } }
       ] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'minimal' } }
+      generationConfig: { temperature: 0.3, maxOutputTokens: 2048, ...wkThinkingConfig(state.aiModel) }
     }, (partialRaw) => {
       const liveItem = state.qtHistory.find(i => i.id === id);
       if(!liveItem) return;
@@ -1551,7 +1571,7 @@ async function qtScanAndTranslate(file){
         { text: prompt },
         { inline_data: { mime_type: file.type || 'image/jpeg', data: base64 } }
       ] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'minimal' }, mediaResolution: 'MEDIA_RESOLUTION_MEDIUM' }
+      generationConfig: { temperature: 0.3, maxOutputTokens: 2048, ...wkThinkingConfig(state.aiModel), mediaResolution: 'MEDIA_RESOLUTION_MEDIUM' }
     });
     if(!resp.ok){
       showToast(`${t('toastScanFailed')} (Error ${resp.status})`, 'error');
