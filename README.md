@@ -30,5 +30,7 @@
 ## 🛠️ Quick Setup & Deployment
 
 1. Configure your Firebase project by following `FIREBASE_SETUP.md`.
-2. Edit `firebase-config.js` with your Firebase project credentials.
-3. Push files to your GitHub repository and enable **GitHub Pages** (Settings > Pages > Source: main branch / root).
+2. Copy `firebase-config.example.js` to `firebase-config.js` and fill in your real Firebase project credentials. `firebase-config.js` is already listed in `.gitignore`, so it will never be pushed to GitHub — run `git status` once before your first push to confirm it shows as ignored.
+3. Set up Firebase Security Rules (Firestore/Storage) and, in Google Cloud Console → Credentials, restrict your Firebase API key to your real domain(s) via HTTP referrer restrictions — this is what actually protects your project, not hiding the key. See the comment block at the top of `firebase-config.js` for details.
+4. Each person who uses the app enters their own Gemini API key in **Settings → Google Gemini AI Engine & API Key**, stored only in their own browser's local storage — you don't need to share or embed your own AI key when distributing the app.
+5. Push files to your GitHub repository and enable **GitHub Pages** (Settings > Pages > Source: main branch / root).

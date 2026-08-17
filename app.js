@@ -19,7 +19,7 @@ const state = {
   langB: typeof langByCode === 'function' ? langByCode('my') : { code:'my', name:'Myanmar', flag:'🇲🇲', ttsLocale:'my-MM' },
   messages: [],
   apiKey: '',
-  aiModel: 'gemini-3.6-flash',
+  aiModel: 'gemini-2.5-flash',
   aiDomain: 'general',
   uiLanguage: 'my',
   autoTranslate: true,
@@ -218,7 +218,7 @@ async function testGeminiApiKey(key){
   badge.innerHTML = '<span style="color:#38BDF8;">⏳ Testing Gemini API connection...</span>';
 
   try {
-    const chosenModel = state.aiModel === 'gemini-3.6-flash' ? 'gemini-2.0-flash' : state.aiModel;
+    const chosenModel = wkResolveModel(state.aiModel);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${chosenModel}:generateContent?key=${testKey}`;
     const res = await fetch(url, {
       method: 'POST',
@@ -340,6 +340,56 @@ function closeWorkspaceTool(handleHistory = true){
     const toolsTab = document.getElementById('tabContentTools');
     if(toolsTab) toolsTab.style.display = 'block';
   }
+}
+
+/* ---- Dictation (mic-to-text, appends to an existing text field) ---- */
+function attachDictation(inputEl, micBtnEl, getLang){
+  if(!wkSpeechRec){ if(micBtnEl) micBtnEl.style.display = 'none'; return; }
+  let rec = null;
+  let listening = false;
+  let baseValue = '';
+  let finalText = '';
+
+  micBtnEl.addEventListener('click', () => {
+    if(listening){ try{ rec.stop(); }catch(e){} return; }
+    if('speechSynthesis' in window) window.speechSynthesis.cancel();
+    const lang = getLang();
+    try{
+      rec = new wkSpeechRec();
+      rec.lang = lang.ttsLocale;
+      rec.continuous = true;
+      rec.interimResults = true;
+      baseValue = inputEl.value ? inputEl.value.trim() + ' ' : '';
+      finalText = '';
+      listening = true;
+      micBtnEl.classList.add('dictating');
+      rec.onresult = (e) => {
+        let interim = '';
+        for(let i = e.resultIndex; i < e.results.length; i++){
+          if(e.results[i].isFinal) finalText += e.results[i][0].transcript + ' ';
+          else interim += e.results[i][0].transcript;
+        }
+        inputEl.value = (baseValue + finalText + interim).trim();
+        inputEl.dispatchEvent(new Event('input'));
+      };
+      rec.onerror = (e) => {
+        if(e.error === 'not-allowed' || e.error === 'permission-denied'){
+          showToast(t('toastMicPermission'), 'error');
+        }
+      };
+      rec.onend = () => { listening = false; micBtnEl.classList.remove('dictating'); };
+      rec.start();
+    }catch(e){ listening = false; micBtnEl.classList.remove('dictating'); }
+  });
+}
+
+/* ---- Model resolution: maps any legacy/unavailable model id to a
+   currently-valid Gemini model, so a stale saved selection never
+   silently breaks every AI call. ---- */
+function wkResolveModel(modelId){
+  const validModels = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-1.5-pro'];
+  if(validModels.includes(modelId)) return modelId;
+  return 'gemini-2.5-flash'; // safe current default for any unknown/retired id
 }
 
 /* =========================================================
@@ -489,10 +539,10 @@ function wkBuildTranslationPrompt(text, sourceLang, targetLang){
     + `Message to translate now: "${text}"`;
 }
 function wkFriendlyApiError(status){
-  if(status === 429) return '⏳ AI quota ကုန်သွားပါပြီ (daily limit) — offline dictionary နဲ့ ပြန်ပြထားပါတယ်';
-  if(status === 401 || status === 403) return '🔑 API key မှားနေနိုင်ပါတယ် — Settings ထဲမှာ key ပြန်စစ်ပေးပါ';
-  if(status >= 500) return '☁️ Google AI server ခဏပြဿနာ ရှိနေပါတယ် — ခဏနေ ထပ်စမ်းကြည့်ပါ';
-  return '⚠️ AI ဆက်သွယ်လို့ မရပါ — offline dictionary နဲ့ ပြန်ပြထားပါတယ်';
+  if(status === 429) return t('errApiQuota');
+  if(status === 401 || status === 403) return t('errApiKeyInvalid');
+  if(status >= 500) return t('errServerError');
+  return t('errGenericAI');
 }
 
 /* ---- Retry queue (auto-resends messages that failed purely due to connectivity) ---- */
@@ -503,7 +553,7 @@ function wkQueueForRetry(msgId, sender, rawText, sourceCode, targetCode){
 async function wkProcessRetryQueue(){
   if(!state.retryQueue.length || !state.apiKey) return;
   const queue = state.retryQueue.splice(0, state.retryQueue.length);
-  showToast(`🔄 Internet ပြန်ရလာလို့ message ${queue.length} ခု ပြန်ဘာသာပြန်နေပါတယ်...`, 'info');
+  showToast(`${t('toastRetryQueue')} (${queue.length})`, 'info');
   for(const item of queue){
     const msg = state.messages.find(m => m.id === item.msgId);
     if(!msg) continue;
@@ -558,6 +608,7 @@ function wkApiThrottle(doFetch){
   return run;
 }
 async function wkGeminiFetch(model, payload){
+  model = wkResolveModel(model);
   return wkApiThrottle(() => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': state.apiKey },
@@ -565,6 +616,7 @@ async function wkGeminiFetch(model, payload){
   }));
 }
 async function wkGeminiFetchStream(model, payload, onChunk){
+  model = wkResolveModel(model);
   if(!window.ReadableStream){
     const resp = await wkGeminiFetch(model, payload);
     if(!resp.ok) return { ok: false, status: resp.status, resp };
@@ -757,13 +809,13 @@ async function wkHandleTranslation(rawText, sender, isVoice){
       if(streamResult.ok){
         const text = (streamResult.fullText || '').trim();
         if(text){ translated = text; wkTmSave(sourceLang.code, targetLang.code, rawText, translated); }
-        else { errorDetail = 'AI ကနေ အဖြေ မရနိုင်ပါ — offline dictionary နဲ့ ပြန်ပြထားပါတယ်'; await fallbackOffline('[Empty response]'); }
+        else { errorDetail = t('errEmptyResponse'); await fallbackOffline('[Empty response]'); }
       } else {
         errorDetail = wkFriendlyApiError(streamResult.status);
         await fallbackOffline('[Network Error]');
       }
     }catch(e){
-      errorDetail = 'Internet connection မရပါ — connection ပြန်ရလာရင် အလိုအလျောက် ထပ်ကြိုးစားပေးပါမယ်';
+      errorDetail = t('errConnectionFailed');
       connectivityFailure = true;
       await fallbackOffline('[Error Connection]');
     }
@@ -808,7 +860,7 @@ async function wkScanAndTranslate(file, side){
   const sourceLang = isA ? state.langA : state.langB;
   const targetLang = isA ? state.langB : state.langA;
   if(state.offlineForced || !state.apiKey){
-    showToast('Scan feature အတွက် AI Translation Key လိုအပ်ပါတယ်။ Settings ထဲမှာ ထည့်ပေးပါ။', 'warn');
+    showToast(t('toastScanNeedsKey'), 'warn');
     return;
   }
   state.translating[side] = true;
@@ -832,7 +884,7 @@ async function wkScanAndTranslate(file, side){
       generationConfig: { temperature: 0.3, maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'minimal' }, mediaResolution: 'MEDIA_RESOLUTION_MEDIUM' }
     });
     if(!resp.ok){
-      showToast(`Scan translation မအောင်မြင်ပါ (Error ${resp.status})`, 'error');
+      showToast(`${t('toastScanFailed')} (Error ${resp.status})`, 'error');
       state.messages = state.messages.filter(m => m.id !== scanMsgId);
       state.translating[side] = false; wkRenderPanel('A'); wkRenderPanel('B');
       return;
@@ -858,7 +910,7 @@ async function wkScanAndTranslate(file, side){
     if(state.autoSpeak) wkSpeak(translatedText, targetLang, continueAutoConversation);
     else continueAutoConversation();
   }catch(e){
-    showToast(`Scan translation အမှားတစ်ခုဖြစ်သွားပါတယ်: ${e.message}`, 'error');
+    showToast(`${t('toastScanFailed')}: ${e.message}`, 'error');
     state.messages = state.messages.filter(m => m.id !== scanMsgId);
   }
   state.translating[side] = false;
@@ -884,7 +936,7 @@ function wkStartStt(side){
     wkStopStt();
     if(e.error === 'not-allowed' || e.error === 'permission-denied'){
       state.autoConversation = false;
-      showToast('Microphone ခွင့်ပြုချက် လိုအပ်ပါတယ်။', 'error');
+      showToast(t('toastMicPermission'), 'error');
     }
   };
   wkRecognition.onspeechend = () => { try{ wkRecognition.stop(); }catch(e){} };
@@ -900,7 +952,7 @@ function wkStopStt(){
 const wkHoldRecordingState = {};
 function wkStartHoldRecording(side){
   if(!wkSpeechRec){
-    showToast('ဒီ browser မှာ voice recognition ကို support မလုပ်ပါ။ Chrome ကို သုံးကြည့်ပါ။', 'error');
+    showToast(t('toastMicNotSupported'), 'error');
     return;
   }
   if('speechSynthesis' in window) window.speechSynthesis.cancel();
@@ -920,12 +972,12 @@ function wkStartHoldRecording(side){
     };
     rec.onerror = (e) => {
       if(e.error === 'not-allowed' || e.error === 'permission-denied'){
-        showToast('Microphone ခွင့်ပြုချက် လိုအပ်ပါတယ်။ Browser setting ထဲမှာ mic ခွင့်ပြုပေးပါ။', 'error');
+        showToast(t('toastMicPermission'), 'error');
       }
     };
     wkHoldRecordingState[side] = { rec, getFinalText: () => finalText.trim() };
     rec.start();
-  }catch(e){ showToast('Microphone ခွင့်ပြုချက် လိုအပ်ပါတယ်။', 'error'); }
+  }catch(e){ showToast(t('toastMicPermission'), 'error'); }
 }
 function wkStopHoldRecording(side){
   const r = wkHoldRecordingState[side];
@@ -955,7 +1007,7 @@ function wkRenderPanel(side){
     <div class="panel-header">
       <div class="who">
         <div class="dot" style="background:${accent}"></div>
-        <div class="label">${isA ? 'Speaker A (အပေါ်)' : 'Speaker B (မိမိ)'}</div>
+        <div class="label">${isA ? t('wkSpeakerA') : t('wkSpeakerB')}</div>
       </div>
       <select class="langSelect" id="wkSelect${side}">
         ${LANGUAGES.map(l => `<option value="${l.code}" ${l.code===currentLang.code?'selected':''} ${l.code===otherLang.code?'disabled':''}>${langOptionLabel(l)}</option>`).join('')}
@@ -964,15 +1016,15 @@ function wkRenderPanel(side){
     <div class="chatLog" id="wkChatLog${side}"></div>
     <div class="inputRow">
       <div class="textFieldWrap">
-        <input type="text" id="wkInput${side}" maxlength="4000" placeholder="${isA ? 'Hold mic to talk…' : 'Type or hold mic to talk…'}" ${isA ? 'readonly' : ''}>
+        <input type="text" id="wkInput${side}" maxlength="4000" placeholder="${isA ? t('wkInputPlaceholderReadonly') : t('wkInputPlaceholderTypable')}" ${isA ? 'readonly' : ''}>
         <button class="sendBtn" id="wkSendBtn${side}">${wkSvgSend()}</button>
       </div>
       <button class="holdMicBtn ${isListening?'recording':''}" id="wkHoldMic${side}">${wkSvgMic()}</button>
     </div>
     <div class="toolbarRow">
-      <button class="camBtn ${isTranslating?'busy':''}" id="wkCam${side}" title="ဓာတ်ပုံ scan ဖတ်ရန်">${wkSvgCamera()}</button>
-      <button class="camBtn" id="wkPhrasebook${side}" title="Phrasebook">${wkSvgBook()}</button>
-      <div class="pttHint" style="flex:1; text-align:right; padding-right:2px;">🎙️ မိုက်ဖိထားပြီး စကားပြော၊ လွှတ်လိုက်ရင် ပို့ပါမည်</div>
+      <button class="camBtn ${isTranslating?'busy':''}" id="wkCam${side}" title="${t('wkCamTitle')}">${wkSvgCamera()}</button>
+      <button class="camBtn" id="wkPhrasebook${side}" title="${t('wkPhrasebookTitle')}">${wkSvgBook()}</button>
+      <div class="pttHint" style="flex:1; text-align:right; padding-right:2px;">${t('wkPttHint')}</div>
     </div>
   `;
 
@@ -1029,13 +1081,13 @@ function wkRenderChatLog(side){
   const el = document.getElementById('wkChatLog'+side);
   if(!el) return;
   if(state.messages.length === 0){
-    el.innerHTML = `<div class="emptyState">${wkSvgTranslate()}<br>စကားပြောမှတ်တမ်း မရှိသေးပါ။<br>မိုက်ဖိထားပြီး စကားပြောပါ (သို့) စာရိုက်ပါ။</div>`;
+    el.innerHTML = `<div class="emptyState">${wkSvgTranslate()}<br>${t('wkEmptyState')}</div>`;
     return;
   }
   el.innerHTML = state.messages.map(msg => {
     const isMine = msg.sender === side;
-    const originalLabel = isMine ? 'Original' : 'Received (Translated)';
-    const translationLabel = isMine ? 'Translated Out' : 'Original Source';
+    const originalLabel = isMine ? t('wkTagOriginal') : t('wkTagReceived');
+    const translationLabel = isMine ? t('wkTagTranslatedOut') : t('wkTagOriginalSource');
     const accent = msg.sender === 'A' ? 'var(--accent-cyan)' : 'var(--primary)';
     const mainRaw = isMine ? msg.originalText : msg.translatedText;
     const subRaw = isMine ? msg.translatedText : msg.originalText;
@@ -1053,13 +1105,13 @@ function wkRenderChatLog(side){
             <div class="badges">
               ${msg.isVoice ? `<svg class="voiceIcon" viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z"/></svg>` : ''}
               ${msg.isScan ? `<span class="scanBadge">📷 scan</span>` : ''}
-              ${msg.usedOffline ? (msg.usedMyMemory ? `<span class="myMemoryBadge">MyMemory</span>` : (msg.approx ? `<span class="offlineBadge">offline</span>` : `<span class="memoryBadge">✓ remembered</span>`)) : ''}
-              ${msg.connectivityFailure ? `<span class="offlineBadge">🔌 queued</span>` : ''}
-              ${msg.approx ? `<span class="approxBadge">≈ approx</span>` : ''}
+              ${msg.usedOffline ? (msg.usedMyMemory ? `<span class="myMemoryBadge">MyMemory</span>` : (msg.approx ? `<span class="offlineBadge">${t('badgeOffline')}</span>` : `<span class="memoryBadge">${t('badgeRemembered')}</span>`)) : ''}
+              ${msg.connectivityFailure ? `<span class="offlineBadge">${t('badgeQueued')}</span>` : ''}
+              ${msg.approx ? `<span class="approxBadge">${t('badgeApprox')}</span>` : ''}
             </div>
           </div>
           ${msg.photoUrl ? `<img src="${msg.photoUrl}" class="scanThumb" alt="Scanned photo">` : ''}
-          <div class="mainText" ${showMainPending ? '' : `data-mid="${msg.id}" data-role="${isMine ? 'orig' : 'trans'}"`}>${showMainPending ? '<span class="dotFlicker">translating…</span>' : escapeHtml(mainRaw)}</div>
+          <div class="mainText" ${showMainPending ? '' : `data-mid="${msg.id}" data-role="${isMine ? 'orig' : 'trans'}"`}>${showMainPending ? '<span class="dotFlicker">' + t('translatingLabel') + '</span>' : escapeHtml(mainRaw)}</div>
           ${showMainPending ? '' : `
           <div class="miniControls">
             <button class="iconBtn wkPlayBtn" data-mid="${msg.id}" data-block="main" data-side="${mainSide}">${wkSvgPlay()}</button>
@@ -1068,7 +1120,7 @@ function wkRenderChatLog(side){
           ${hideSub ? '' : `
           <hr>
           <div class="subRow"><span class="subLabel">${isMine ? translationLabel : originalLabel}</span></div>
-          <div class="subText" ${showSubPending ? '' : `data-mid="${msg.id}" data-role="${isMine ? 'trans' : 'orig'}"`}>${showSubPending ? '<span class="dotFlicker">translating…</span>' : escapeHtml(subRaw)}</div>
+          <div class="subText" ${showSubPending ? '' : `data-mid="${msg.id}" data-role="${isMine ? 'trans' : 'orig'}"`}>${showSubPending ? '<span class="dotFlicker">' + t('translatingLabel') + '</span>' : escapeHtml(subRaw)}</div>
           ${showSubPending ? '' : `
           <div class="miniControls">
             <button class="iconBtn wkPlayBtn" data-mid="${msg.id}" data-block="sub" data-side="${subSide}">${wkSvgPlay()}</button>
@@ -1147,14 +1199,15 @@ function initWalkieTalkieUI(){
     const tmp = state.langA; state.langA = state.langB; state.langB = tmp;
     wkRenderPanel('A'); wkRenderPanel('B');
     vibrate(12);
-    showToast('Languages swapped!');
+    showToast(t('toastLangSwapped'));
   };
 
   const autoSpeakBtn = document.getElementById('walkieAutoSpeakToggle');
   if(autoSpeakBtn){
+    autoSpeakBtn.textContent = state.autoSpeak ? t('autoSpeakOnLabel') : t('autoSpeakOffLabel');
     autoSpeakBtn.onclick = () => {
       state.autoSpeak = !state.autoSpeak;
-      autoSpeakBtn.textContent = state.autoSpeak ? '🔊 အသံ: ဖွင့်ထားသည်' : '🔇 အသံ: ပိတ်ထားသည်';
+      autoSpeakBtn.textContent = state.autoSpeak ? t('autoSpeakOnLabel') : t('autoSpeakOffLabel');
       autoSpeakBtn.style.color = state.autoSpeak ? '#34D399' : '#94A3B8';
       vibrate(10);
     };
@@ -1162,12 +1215,13 @@ function initWalkieTalkieUI(){
 
   const autoConvBtn = document.getElementById('walkieAutoConvToggle');
   if(autoConvBtn){
+    autoConvBtn.textContent = state.autoConversation ? t('autoChatOnLabel') : t('autoChatOffLabel');
     autoConvBtn.onclick = () => {
       state.autoConversation = !state.autoConversation;
-      autoConvBtn.textContent = state.autoConversation ? '🤝 Auto Chat: ဖွင့်ထားသည်' : '🤝 Auto Chat: ပိတ်ထားသည်';
+      autoConvBtn.textContent = state.autoConversation ? t('autoChatOnLabel') : t('autoChatOffLabel');
       autoConvBtn.style.color = state.autoConversation ? '#34D399' : '#94A3B8';
       vibrate(10);
-      showToast(state.autoConversation ? 'Auto Chat ဖွင့်ထားသည် — စကားပြောပြီးတိုင်း တစ်ဖက်စီ အလိုအလျောက် နားထောင်ပါမည်' : 'Auto Chat ပိတ်ထားသည်');
+      showToast(state.autoConversation ? t('toastAutoChatOn') : t('toastAutoChatOff'));
     };
   }
 
@@ -1189,7 +1243,7 @@ state.qtTargetCode = state.qtTargetCode || 'my';
 state.qtMicCode = state.qtMicCode || 'en';
 
 const WORK_DOMAINS = [
-  { code: 'general', label: '🌐 General (အထူးမဟုတ်)', hint: '', suggestions: [] },
+  { code: 'general', label: '🌐 General', hint: '', suggestions: [] },
   {
     code: 'electronics', label: '🔌 Electronics / PCB Factory',
     hint: 'This conversation takes place in an electronics / PCB (printed circuit board) manufacturing factory. Use accurate industry-standard technical terminology for concepts like SMT (surface-mount technology), reflow soldering, pick-and-place machines, solder paste, wave soldering, PCB inspection, quality control (QC), defect rate, ESD (electrostatic discharge) precautions, and production line workflow — translate the way an experienced factory worker or engineer in this industry would actually say it, not literally word-for-word.',
@@ -1286,7 +1340,7 @@ function qtRenderSuggestions(){
 function qtRenderHistory(){
   const el = document.getElementById('qtHistoryList');
   if(!state.qtHistory.length){
-    el.innerHTML = '<div class="qtEmpty">မသိတဲ့ စာသားကို ကူးထည့်ပါ၊ ဓာတ်ပုံရိုက်ပါ၊<br>သို့မဟုတ် အသံနဲ့ မေးပါ — AI က ရွေးထားတဲ့ဘာသာစကားသို့ တိကျစွာ ပြန်ပေးပါလိမ့်မယ်။</div>';
+    el.innerHTML = `<div class="qtEmpty">${t('qtEmptyState')}</div>`;
     return;
   }
   el.innerHTML = state.qtHistory.map(item => `
@@ -1294,11 +1348,11 @@ function qtRenderHistory(){
       ${item.pending ? `
         <div class="qtOriginal">${escapeHtml(item.queryLabel || item.originalText || '')}</div>
         <hr>
-        <div class="qtTranslation"><span class="dotFlicker">translating…</span></div>
+        <div class="qtTranslation"><span class="dotFlicker">${t('translatingLabel')}</span></div>
       ` : `
         <div class="qtBadges">
-          ${item.detectedLang ? `<span class="qtDetected">Detected: ${escapeHtml(item.detectedLang)}</span>` : ''}
-          ${item.usedOffline ? (item.usedMyMemory ? `<span class="myMemoryBadge">MyMemory</span>` : (item.approx ? `<span class="offlineBadge">offline</span>` : `<span class="memoryBadge">✓ remembered</span>`)) : ''}
+          ${item.detectedLang ? `<span class="qtDetected">${t('qtDetectedLabel')} ${escapeHtml(item.detectedLang)}</span>` : ''}
+          ${item.usedOffline ? (item.usedMyMemory ? `<span class="myMemoryBadge">MyMemory</span>` : (item.approx ? `<span class="offlineBadge">${t('badgeOffline')}</span>` : `<span class="memoryBadge">${t('badgeRemembered')}</span>`)) : ''}
         </div>
         ${item.photoUrl ? `<img src="${item.photoUrl}" class="scanThumb" alt="Scanned photo">` : ''}
         <div class="qtOriginal" data-qtid-orig="${item.id}">${escapeHtml(item.originalText)}</div>
@@ -1400,7 +1454,7 @@ async function qtTranslate(rawText, queryLabel){
 async function qtHandleVoiceHold(blob){
   const targetLang = langByCode(state.qtTargetCode) || LANGUAGES[0];
   if(state.offlineForced || !state.apiKey){
-    showToast('Hold-to-Talk အတွက် AI Translation Key/Internet လိုအပ်ပါတယ်', 'warn');
+    showToast(t('toastPttNeedsKey'), 'warn');
     document.getElementById('pttCaptionQT').textContent = '';
     return;
   }
@@ -1442,7 +1496,7 @@ async function qtHandleVoiceHold(blob){
     });
 
     if(!streamResult.ok){
-      showToast(`Voice translation မအောင်မြင်ပါ (Error ${streamResult.status || ''})`, 'error');
+      showToast(`${t('toastVoiceFailed')} (Error ${streamResult.status || ''})`, 'error');
       state.qtHistory = state.qtHistory.filter(i => i.id !== id);
       qtRenderHistory();
       return;
@@ -1462,7 +1516,7 @@ async function qtHandleVoiceHold(blob){
     vibrate(15);
     if(state.autoSpeak) wkSpeak(translatedText, targetLang);
   }catch(e){
-    showToast(`Voice translation အမှားဖြစ်သွားပါတယ်: ${e.message}`, 'error');
+    showToast(`${t('toastVoiceFailed')}: ${e.message}`, 'error');
     state.qtHistory = state.qtHistory.filter(i => i.id !== id);
     qtRenderHistory();
   }
@@ -1471,7 +1525,7 @@ async function qtHandleVoiceHold(blob){
 async function qtScanAndTranslate(file){
   const targetLang = langByCode(state.qtTargetCode) || LANGUAGES[0];
   if(state.offlineForced || !state.apiKey){
-    showToast('Scan feature အတွက် AI Translation Key လိုအပ်ပါတယ်။ Settings ထဲမှာ ထည့်ပေးပါ။', 'warn');
+    showToast(t('toastScanNeedsKey'), 'warn');
     return;
   }
   const id = Date.now().toString();
@@ -1500,7 +1554,7 @@ async function qtScanAndTranslate(file){
       generationConfig: { temperature: 0.3, maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'minimal' }, mediaResolution: 'MEDIA_RESOLUTION_MEDIUM' }
     });
     if(!resp.ok){
-      showToast(`Scan translation မအောင်မြင်ပါ (Error ${resp.status})`, 'error');
+      showToast(`${t('toastScanFailed')} (Error ${resp.status})`, 'error');
       state.qtHistory = state.qtHistory.filter(i => i.id !== id);
       qtRenderHistory();
       return;
@@ -1520,7 +1574,7 @@ async function qtScanAndTranslate(file){
     qtRenderHistory();
     if(state.autoSpeak) wkSpeak(translatedText, targetLang);
   } catch(e){
-    showToast(`Scan translation အမှားဖြစ်သွားပါတယ်: ${e.message}`, 'error');
+    showToast(`${t('toastScanFailed')}: ${e.message}`, 'error');
     state.qtHistory = state.qtHistory.filter(i => i.id !== id);
     qtRenderHistory();
   }
@@ -1530,7 +1584,7 @@ async function qtScanAndTranslate(file){
 let qtRecognition = null;
 function qtStartRecognition(){
   if(!wkSpeechRec){
-    showToast('ဒီ browser မှာ voice input ကို support မလုပ်ပါ။ Chrome ကို သုံးကြည့်ပါ။', 'error');
+    showToast(t('toastMicNotSupported'), 'error');
     return;
   }
   if(qtRecognition){ try{ qtRecognition.stop(); }catch(e){} qtRecognition = null; }
@@ -1544,7 +1598,7 @@ function qtStartRecognition(){
     if(text && text.trim()) qtTranslate(text, `🎙️ ${text}`);
   };
   qtRecognition.onerror = (e) => {
-    if(e.error !== 'no-speech' && e.error !== 'aborted') showToast('Voice input အမှားဖြစ်သွားပါတယ်: ' + e.error, 'error');
+    if(e.error !== 'no-speech' && e.error !== 'aborted') showToast(t('toastVoiceFailed') + ': ' + e.error, 'error');
   };
   qtRecognition.onspeechend = () => { try{ qtRecognition.stop(); }catch(e){} };
   qtRecognition.onend = () => { qtRecognition = null; document.getElementById('qtMicBtn').classList.remove('listening'); };
@@ -1561,7 +1615,7 @@ function wkPickAudioMimeType(){
 }
 async function qtStartHoldRecordingAudio(){
   if(!window.MediaRecorder){
-    showToast('ဒီ browser မှာ voice recording ကို support မလုပ်ပါ။ Chrome ကို သုံးကြည့်ပါ။', 'error');
+    showToast(t('toastMicNotSupported'), 'error');
     return;
   }
   try{
@@ -1574,14 +1628,14 @@ async function qtStartHoldRecordingAudio(){
     mediaRecorder.start();
     qtStartWaveform();
   }catch(e){
-    showToast('Microphone ခွင့်ပြုချက် လိုအပ်ပါတယ်။ Browser setting ထဲမှာ mic ခွင့်ပြုပေးပါ။', 'error');
+    showToast(t('toastMicPermission'), 'error');
     document.getElementById('pttCaptionQT').textContent = '';
   }
 }
 function qtStopHoldRecordingAudio(){
   const r = wkHoldRecordingState.QT;
   if(!r){ document.getElementById('pttCaptionQT').textContent = ''; return; }
-  document.getElementById('pttCaptionQT').textContent = '⏳ Processing...';
+  document.getElementById('pttCaptionQT').textContent = '⏳ ' + t('translatingLabel');
   const finish = (blob) => {
     try{ r.stream.getTracks().forEach(t => t.stop()); }catch(e){}
     delete wkHoldRecordingState.QT;
@@ -1651,6 +1705,11 @@ function initQuickTranslateUI(){
   const micSel = document.getElementById('qtMicLang');
   if(!tgtSel || !micSel) return;
 
+  document.getElementById('qtTargetLabelText').textContent = t('qtTargetLabel');
+  document.getElementById('qtDomainLabelText').textContent = t('qtDomainLabel');
+  document.getElementById('qtMicLangLabelText').textContent = t('qtMicLangLabel');
+  document.getElementById('qtInputText').placeholder = t('qtInputPlaceholder');
+
   tgtSel.innerHTML = LANGUAGES.map(l => `<option value="${l.code}">${langOptionLabel(l)}</option>`).join('');
   micSel.innerHTML = LANGUAGES.map(l => `<option value="${l.code}">${langOptionLabel(l)}</option>`).join('');
   tgtSel.value = state.qtTargetCode;
@@ -1711,7 +1770,7 @@ function initQuickTranslateUI(){
     try{ qtPttCircle.setPointerCapture(e.pointerId); }catch(err){}
     qtPttHoldActive = true; vibrate(15);
     qtPttCircle.classList.add('recording');
-    document.getElementById('pttCaptionQT').textContent = '🎙️ Recording... release to send';
+    document.getElementById('pttCaptionQT').textContent = t('qtRecordingHint');
     qtStartHoldRecordingAudio();
   };
   const endQtPttHold = () => {
@@ -1812,7 +1871,7 @@ function wkUpdateLiveStatus(text, color){
 
 async function startLiveInterpreter(langACode, langBCode){
   if(!state.apiKey){
-    showToast('Live Mode အတွက် AI Translation Key လိုအပ်ပါတယ် — Settings ထဲမှာ ထည့်ပေးပါ', 'warn');
+    showToast(t('liveNeedsKey'), 'warn');
     return;
   }
   const langA = langByCode(langACode) || LANGUAGES[0];
@@ -1821,13 +1880,13 @@ async function startLiveInterpreter(langACode, langBCode){
   vibrate(20);
   const visNode = document.getElementById('liveVisualizerNode');
   if(visNode) visNode.classList.add('listening');
-  wkUpdateLiveStatus('⚡ Live Interpreter connecting…', '#FBBF24');
+  wkUpdateLiveStatus(t('liveConnectingLabel'), '#FBBF24');
   wkLiveAddTranscriptLine('system', 'Connecting…');
 
   try{
     wkLiveState.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
   }catch(e){
-    showToast('Microphone ခွင့်ပြုချက် လိုအပ်ပါတယ်', 'error');
+    showToast(t('toastMicPermission'), 'error');
     stopLiveInterpreter();
     return;
   }
@@ -1838,7 +1897,7 @@ async function startLiveInterpreter(langACode, langBCode){
   ws.onopen = () => {
     ws.send(JSON.stringify({
       setup: {
-        model: 'models/gemini-3.1-flash-live-preview',
+        model: 'models/gemini-2.5-flash-native-audio-preview-12-2025',
         generationConfig: { responseModalities: ['AUDIO'] },
         systemInstruction: { parts: [{ text: wkLiveInterpreterSystemPrompt(langA, langB) }] },
         outputAudioTranscription: {},
@@ -1846,9 +1905,9 @@ async function startLiveInterpreter(langACode, langBCode){
       }
     }));
   };
-  ws.onerror = () => { showToast('Live Mode connection error ဖြစ်သွားပါတယ်', 'error'); };
+  ws.onerror = () => { showToast(t('liveConnError'), 'error'); };
   ws.onclose = () => {
-    if(wkLiveState.connected) showToast('Live Mode connection ပြတ်တောက်သွားပါတယ်', 'warn');
+    if(wkLiveState.connected) showToast(t('liveConnClosed'), 'warn');
     stopLiveInterpreter();
   };
   ws.onmessage = async (event) => {
@@ -1859,7 +1918,7 @@ async function startLiveInterpreter(langACode, langBCode){
 
     if(msg.setupComplete){
       wkLiveState.connected = true;
-      wkUpdateLiveStatus('⚡ Live — နှစ်ဖက်စလုံး အချိန်မရွေး ပြောလို့ရပါပြီ', '#34D399');
+      wkUpdateLiveStatus(t('liveConnectedLabel'), '#34D399');
       wkLiveAddTranscriptLine('system', 'Connected — start speaking, either language.');
       startLiveMicCapture();
       return;
@@ -1922,13 +1981,18 @@ function stopLiveInterpreter(){
   if(wkLiveState.micStream){ try{ wkLiveState.micStream.getTracks().forEach(t => t.stop()); }catch(e){} wkLiveState.micStream = null; }
   const visNode = document.getElementById('liveVisualizerNode');
   if(visNode) visNode.classList.remove('listening');
-  wkUpdateLiveStatus('ရပ်တန့်ထားပါသည် (နှိပ်ပြီး စတင်ပါ)', '#FBBF24');
+  wkUpdateLiveStatus(t('liveStoppedLabel'), '#FBBF24');
 }
 
 function initLiveInterpreterUI(){
   const selA = document.getElementById('liveLangA');
   const selB = document.getElementById('liveLangB');
   if(!selA || !selB) return;
+
+  if(!state.isLiveActive){
+    const statusLabel = document.getElementById('liveStatusLabel');
+    if(statusLabel) statusLabel.textContent = t('liveReadyLabel');
+  }
 
   selA.innerHTML = LANGUAGES.map(l => `<option value="${l.code}">${langOptionLabel(l)}</option>`).join('');
   selB.innerHTML = LANGUAGES.map(l => `<option value="${l.code}">${langOptionLabel(l)}</option>`).join('');
@@ -2030,9 +2094,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     const savedModel = localStorage.getItem('ot_aiModel');
     if(savedModel){
-      state.aiModel = savedModel;
+      state.aiModel = wkResolveModel(savedModel); // sanitize any old/retired model id from a previous version
       const modelSelect = document.getElementById('aiModelSelect');
-      if(modelSelect) modelSelect.value = savedModel;
+      if(modelSelect) modelSelect.value = state.aiModel;
     }
     const savedDomain = localStorage.getItem('ot_aiDomain');
     if(savedDomain){
@@ -2076,6 +2140,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     if(readingSelect) readingSelect.value = state.uiLanguage;
     if(typeof renderRecentChatsList === 'function') renderRecentChatsList();
     if(typeof renderFriendsList === 'function') renderFriendsList(myFriendsCache);
+    // Re-render any currently-open Workspace tool panel so its dynamically
+    // generated text (labels, badges, toasts, empty states) also switches
+    // immediately, not just on next open.
+    if(document.getElementById('viewWalkieTalkie')?.style.display !== 'none' && typeof wkRenderPanel === 'function'){
+      wkRenderPanel('A'); wkRenderPanel('B');
+    }
+    if(document.getElementById('viewQuickTranslate')?.style.display !== 'none' && typeof initQuickTranslateUI === 'function'){
+      initQuickTranslateUI();
+    }
+    if(document.getElementById('viewLiveInterpreter')?.style.display !== 'none' && typeof initLiveInterpreterUI === 'function'){
+      initLiveInterpreterUI();
+    }
     showToast('Language updated: ' + e.target.value.toUpperCase());
   });
 
