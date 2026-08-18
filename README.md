@@ -43,3 +43,5 @@
 
    **Option B — simpler, if you don't want to use Actions:**
    - Firebase web config values are not secret by design the way a server API key is — Firebase itself documents this (protection comes from Security Rules + key restrictions in step 2, not from hiding the config). If GitHub's push protection flags your key when you commit `firebase-config.js` with real values, you can click **"Allow secret"** in the GitHub prompt for this specific push — this is the officially-sanctioned move for this exact key type. Copy `firebase-config.example.js` to `firebase-config.js`, fill in your real values, and push normally (skip the `.gitignore` entry for this file, or remove it from `.gitignore`, if you go this route).
+  
+     
