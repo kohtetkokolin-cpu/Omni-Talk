@@ -30,18 +30,8 @@
 ## 🛠️ Quick Setup & Deployment
 
 1. Configure your Firebase project by following `FIREBASE_SETUP.md`.
-2. Set up Firebase Security Rules (Firestore/Storage) and, in Google Cloud Console → Credentials, restrict your Firebase API key to your real domain(s) via HTTP referrer restrictions — this is what actually protects your project, not hiding the key. See the comment block at the top of `firebase-config.js` for details.
-3. Each person who uses the app enters their own Gemini API key in **Settings → Google Gemini AI Engine & API Key**, stored only in their own browser's local storage — you don't need to share or embed your own AI key when distributing the app.
-4. **Deploying your real Firebase key** — two options, pick one:
-
-   **Option A — GitHub Actions (recommended, keeps the real key out of git entirely):**
-   - Keep `firebase-config.js` as the placeholder template it already is (never edit it with your real values) — it stays gitignored either way.
-   - In your GitHub repo: **Settings → Secrets and variables → Actions → New repository secret**, and add these six secrets, one value each, from Firebase Console → Project Settings → General → Your apps → Web app:
-     `FIREBASE_API_KEY`, `FIREBASE_AUTH_DOMAIN`, `FIREBASE_PROJECT_ID`, `FIREBASE_STORAGE_BUCKET`, `FIREBASE_MESSAGING_SENDER_ID`, `FIREBASE_APP_ID`
-   - In **Settings → Pages**, set Source to **GitHub Actions** (not "Deploy from a branch").
-   - Push to `main`. The included `.github/workflows/deploy.yml` writes your real config into a temporary build copy of `firebase-config.js` and deploys that — the real key is encrypted in GitHub Secrets and never appears in your repo, a commit, or git history.
-
-   **Option B — simpler, if you don't want to use Actions:**
-   - Firebase web config values are not secret by design the way a server API key is — Firebase itself documents this (protection comes from Security Rules + key restrictions in step 2, not from hiding the config). If GitHub's push protection flags your key when you commit `firebase-config.js` with real values, you can click **"Allow secret"** in the GitHub prompt for this specific push — this is the officially-sanctioned move for this exact key type. Copy `firebase-config.example.js` to `firebase-config.js`, fill in your real values, and push normally (skip the `.gitignore` entry for this file, or remove it from `.gitignore`, if you go this route).
-  
-     
+2. Set up Firebase Security Rules (Firestore/Storage) and, in Google Cloud Console → Credentials, restrict your Firebase API key to your real domain(s) via HTTP referrer restrictions — this (not hiding the key) is what actually protects your project. See the comment block at the top of `firebase-config.js` for details.
+3. Open `firebase-config.js`, paste your six real values from Firebase Console → Project Settings → General → Your apps → Web app, save the file.
+4. Commit and push normally. If GitHub shows a push-protection warning, click **"Allow secret"** — expected and safe for this file (see the comment in `firebase-config.js` for why).
+5. **Settings → Pages → Source: Deploy from a branch**, pick `main` / root, save. Your site goes live at the URL shown there within a minute or two.
+6. Each person who uses the app enters their own Gemini API key in **Settings → Google Gemini AI Engine & API Key** inside the app itself, stored only in their own browser's local storage — you don't need to share or embed your own AI key when distributing the app.
