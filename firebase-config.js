@@ -19,11 +19,12 @@
        referrers) — restrict this key to your real domain(s).
    Set those two up once and this file is safe to keep in your repo.
 ========================================================== */
-const FIREBASE_CONFIG = {
-  apiKey: "YOUR_FIREBASE_API_KEY_HERE",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
+const firebaseConfig = {
+  apiKey: "AIzaSyCuSnW084iY-6-1UUH3CarAy3__XFQowXs",
+  authDomain: "omni-talk-messenger.firebaseapp.com",
+  projectId: "omni-talk-messenger",
+  storageBucket: "omni-talk-messenger.firebasestorage.app",
+  messagingSenderId: "668979617067",
+  appId: "1:668979617067:web:0244ba2d5292a2d043b96e",
+  measurementId: "G-ZG5TC3KB93"
 };
