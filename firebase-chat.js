@@ -1,38 +1,74 @@
 /* ==========================================================
    OmniTalk PRO v12.0 — firebase-chat.js
-   Chat Engine & LocalStorage Manager (with Gemini AI Integration)
+   WeChat Style Engine (Profile, Friends, Auto-Translate)
 ========================================================== */
 
-let currentUser = { 
-    uid: 'user123', 
-    displayName: 'My Account', 
-    friendCode: '123456' 
+// ၁။ မူလ User Profile (LocalStorage ကနေ ဆွဲယူမည်)
+let currentUser = JSON.parse(localStorage.getItem('ot_currentUser')) || { 
+    uid: 'user_' + Math.floor(Math.random() * 10000), 
+    displayName: 'My Name', 
+    friendCode: Math.floor(100000 + Math.random() * 900000).toString(),
+    avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix' // Default Profile ပုံ
 };
 
-let myFriendsCache = [
-    { uid: '577369', displayName: 'Colleague (577369)' },
-    { uid: 'ai_assistant', displayName: 'Gemini AI' }
+// ၂။ သူငယ်ချင်း စာရင်း
+let myFriendsCache = JSON.parse(localStorage.getItem('ot_friends')) || [
+    { uid: 'ai_assistant', displayName: 'Gemini AI', avatar: '🤖', isBot: true }
 ];
 
 let activeChatSession = null;
 
-// Initialize function called by app.js
+// App စစချင်း အလုပ်လုပ်မည့် Function
 async function fbInit() {
-    renderRecentChatsList();
+    localStorage.setItem('ot_currentUser', JSON.stringify(currentUser));
     renderFriendsList(myFriendsCache);
+    renderRecentChatsList();
 }
 
-function renderRecentChatsList() {
-    // Stub: UI Logic for Recent Chats List
-    console.log("Recent chats loaded.");
+// ၃။ Profile အချက်အလက်များ ပြင်ဆင်ခြင်း
+function updateProfile(newName, newAvatarUrl) {
+    currentUser.displayName = newName || currentUser.displayName;
+    currentUser.avatar = newAvatarUrl || currentUser.avatar;
+    localStorage.setItem('ot_currentUser', JSON.stringify(currentUser));
+    showToast("Profile ကို အောင်မြင်စွာ ပြင်ဆင်ပြီးပါပြီ", "success");
 }
 
+// ၄။ သူငယ်ချင်း Add ခြင်း (app.js မှ လှမ်းခေါ်မည်)
+async function fbAddFriendByCode(code) {
+    if (code === currentUser.friendCode) return { ok: false, reason: 'self' };
+    
+    // သူငယ်ချင်းအသစ်ကို List ထဲ ထည့်မည် (WeChat လိုမျိုး)
+    const newFriend = {
+        uid: 'user_' + code,
+        displayName: 'Friend (' + code + ')',
+        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${code}`,
+        targetLang: 'Chinese' // ဥပမာ - ဒီသူငယ်ချင်းကို တရုတ်လို သတ်မှတ်ထားမည်
+    };
+
+    const isExist = myFriendsCache.find(f => f.uid === newFriend.uid);
+    if (!isExist) {
+        myFriendsCache.push(newFriend);
+        localStorage.setItem('ot_friends', JSON.stringify(myFriendsCache));
+        renderFriendsList(myFriendsCache);
+        return { ok: true };
+    }
+    return { ok: false, reason: 'exists' };
+}
+
+// Group Chat ဖန်တီးခြင်း
+async function fbCreateGroupChat(name, selectedUids) {
+    showToast("Group '" + name + "' ဖန်တီးပြီးပါပြီ။", "success");
+}
+
+// UI တွင် သူငယ်ချင်းများ ပြခြင်း (Stub)
 function renderFriendsList(friends) {
-    // Stub: UI Logic for Friends List
-    console.log("Friends list loaded.");
+    console.log("Friends list updated: ", friends);
+}
+function renderRecentChatsList() {
+    console.log("Recent chats updated.");
 }
 
-// Open Chat Room
+// ၅။ Chat ခန်းထဲ ဝင်ခြင်း
 function openChatSession(type, targetId, title) {
     activeChatSession = { type, targetId, title };
     const chatRoom = document.getElementById('chatRoomView');
@@ -42,40 +78,60 @@ function openChatSession(type, targetId, title) {
     if (chatTitle) chatTitle.textContent = title;
     
     const storageKey = 'ot_demo_messages_' + targetId;
-    const stored = localStorage.getItem(storageKey);
-    const msgs = stored ? JSON.parse(stored) : [];
-    
+    const msgs = JSON.parse(localStorage.getItem(storageKey) || '[]');
     renderChatMessages(msgs);
 }
 
-// Render Messages to UI (Bug 1 Fixed: Timestamps Sorted)
+// ၆။ Message များကို WeChat ပုံစံဖြင့် ပြသခြင်း
 function renderChatMessages(msgs) {
-    const container = document.getElementById('chatMessagesContainer'); // Ensure this ID matches your HTML
+    const container = document.getElementById('chatMessagesContainer');
     if (!container) return;
     
-    // ဖြေရှင်းချက် (၁) - Message များကို အချိန် (Timestamp) အစဉ်လိုက်ဖြစ်အောင် စီပေးခြင်း
+    // အချိန် (Timestamp) အစဉ်လိုက် စီခြင်း
     msgs.sort((a, b) => a.timestamp - b.timestamp);
     
     container.innerHTML = msgs.map(msg => {
         const isMine = msg.senderId === currentUser.uid;
         const timeStr = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         
+        const mainText = isMine ? msg.originalText : (msg.translatedText || msg.originalText);
+        const subText = isMine ? msg.translatedText : msg.originalText;
+        const avatar = isMine ? currentUser.avatar : (msg.avatar || '👤');
+        
         return `
-            <div class="chat-bubble-row ${isMine ? 'mine' : 'theirs'}" style="display:flex; flex-direction:column; align-items:${isMine ? 'flex-end' : 'flex-start'}; margin-bottom: 10px;">
-                <div class="chat-bubble" style="background:${isMine ? 'var(--primary)' : '#334155'}; padding: 10px 14px; border-radius: 12px; max-width: 75%; color: #fff;">
-                    <div style="font-size: 0.75rem; color: #cbd5e1; margin-bottom: 4px;">${escapeHtml(msg.senderName)}</div>
-                    <div>${escapeHtml(msg.text)}</div>
-                    <div style="font-size: 0.7rem; color: #94a3b8; text-align: right; margin-top: 5px;">${timeStr}</div>
+            <div class="chat-bubble-row ${isMine ? 'mine' : 'theirs'}" style="display:flex; flex-direction:${isMine ? 'row-reverse' : 'row'}; align-items:flex-start; margin-bottom: 16px; gap: 10px;">
+                <!-- Profile ပုံ -->
+                <img src="${avatar}" alt="avatar" style="width: 40px; height: 40px; border-radius: 50%; object-fit: cover; background: #e2e8f0;">
+                
+                <div style="display:flex; flex-direction:column; align-items:${isMine ? 'flex-end' : 'flex-start'}; max-width: 70%;">
+                    <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px; padding: 0 4px;">${escapeHtml(msg.senderName)}</div>
+                    
+                    <!-- စာသား Bubble -->
+                    <div class="chat-bubble" style="background:${isMine ? '#10b981' : '#f1f5f9'}; color:${isMine ? '#fff' : '#1e293b'}; padding: 10px 14px; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.1);">
+                        <div style="font-size: 1rem;">${escapeHtml(mainText)}</div>
+                        
+                        ${subText && subText !== "Translating..." ? `
+                            <div style="font-size: 0.85rem; color: ${isMine ? '#d1fae5' : '#64748b'}; margin-top: 6px; border-top: 1px solid ${isMine ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.1)'}; padding-top: 6px;">
+                                ${escapeHtml(subText)}
+                            </div>
+                        ` : ''}
+                        
+                        ${subText === "Translating..." ? `
+                            <div style="font-size: 0.85rem; color: ${isMine ? '#fff' : '#38bdf8'}; margin-top: 6px; font-style: italic;">
+                                ⏳ Translating...
+                            </div>
+                        ` : ''}
+                    </div>
+                    <div style="font-size: 0.7rem; color: #94a3b8; margin-top: 4px; padding: 0 4px;">${timeStr}</div>
                 </div>
             </div>
         `;
     }).join('');
     
-    // Scroll to bottom
     container.scrollTop = container.scrollHeight;
 }
 
-// Send Message & Get AI Response (Bug 2 Fixed: Gemini API Connected)
+// ၇။ စာပို့ခြင်း နှင့် Auto-Translate လုပ်ခြင်း
 async function fbSendMessage(text) {
     if (!activeChatSession || !text) return;
     
@@ -83,63 +139,73 @@ async function fbSendMessage(text) {
     const storageKey = 'ot_demo_messages_' + targetId;
     let msgs = JSON.parse(localStorage.getItem(storageKey) || '[]');
     
-    // ၁။ User ပို့လိုက်တဲ့ Message ကို သိမ်းပြီး UI မှာ ပြမည်
+    // သူငယ်ချင်းရဲ့ ဘာသာစကားကို ရှာမည် (မတွေ့ရင် အင်္ဂလိပ်လို့ သတ်မှတ်မည်)
+    const friendInfo = myFriendsCache.find(f => f.uid === targetId);
+    const targetLang = friendInfo?.targetLang || "English"; 
+    const tempMsgId = Date.now().toString();
+    
+    // UI တွင် မိမိစာကို အရင်ပေါ်စေခြင်း
     const userMsg = {
-        id: Date.now().toString(),
+        id: tempMsgId,
         senderId: currentUser.uid,
         senderName: currentUser.displayName,
-        text: text,
+        avatar: currentUser.avatar,
+        originalText: text,
+        translatedText: targetId === 'ai_assistant' ? '' : "Translating...",
         timestamp: Date.now()
     };
     msgs.push(userMsg);
     localStorage.setItem(storageKey, JSON.stringify(msgs));
     renderChatMessages(msgs);
 
-    // ၂။ Gemini API ကို ခေါ်ပြီး AI ဆီက စာပြန်ခိုင်းမည် (Hardcoded reply အစား)
-    if (!state.apiKey) {
-        showToast("Gemini API Key မရှိသေးပါ။ Settings တွင် ထည့်ပါ။", "warn");
-        return;
-    }
-
+    // AI ကို သုံး၍ ဘာသာပြန်ခြင်း သို့မဟုတ် စာပြန်ခိုင်းခြင်း
     try {
-        // app.js ထဲက wkGeminiFetch ကို လှမ်းသုံးထားပါသည်
-        const prompt = `You are a friendly and helpful assistant chatting in a messaging app. Reply naturally to this message: "${text}"`;
+        let prompt = "";
+        if (targetId === 'ai_assistant') {
+            prompt = `You are a helpful chat assistant. Reply normally to: "${text}"`;
+        } else {
+            prompt = `Translate the following text to ${targetLang}. Return ONLY the translated text without quotes. Text: "${text}"`;
+        }
         
         const resp = await wkGeminiFetch(state.aiModel, {
             contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
+            generationConfig: { temperature: targetId === 'ai_assistant' ? 0.7 : 0.1 }
         });
 
         if (resp.ok) {
             const data = await resp.json();
-            const aiText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            const aiResponse = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
             
-            if (aiText) {
-                // AI ပြန်ပို့တဲ့ Message ကို သိမ်းပြီး UI မှာ ပြမည်
-                const aiMsg = {
+            let updatedMsgs = JSON.parse(localStorage.getItem(storageKey) || '[]');
+            
+            if (targetId === 'ai_assistant') {
+                // AI Bot ဆိုရင် စာပြန်မည်
+                updatedMsgs.push({
                     id: Date.now().toString(),
-                    senderId: targetId,
-                    senderName: activeChatSession.title || 'Gemini AI',
-                    text: aiText,
+                    senderId: 'ai_assistant',
+                    senderName: 'Gemini AI',
+                    avatar: '🤖',
+                    originalText: aiResponse,
+                    translatedText: '',
                     timestamp: Date.now()
-                };
-                
-                msgs = JSON.parse(localStorage.getItem(storageKey) || '[]');
-                msgs.push(aiMsg);
-                localStorage.setItem(storageKey, JSON.stringify(msgs));
-                renderChatMessages(msgs);
+                });
+            } else {
+                // သူငယ်ချင်းဆိုရင် ဘာသာပြန်ထားတာကို Update လုပ်မည်
+                let msgIndex = updatedMsgs.findIndex(m => m.id === tempMsgId);
+                if (msgIndex !== -1) {
+                    updatedMsgs[msgIndex].translatedText = aiResponse || text;
+                }
             }
-        } else {
-            showToast("AI Error: API Rate Limit သို့မဟုတ် Key မှားနေပါသည်။", "error");
+            
+            localStorage.setItem(storageKey, JSON.stringify(updatedMsgs));
+            renderChatMessages(updatedMsgs);
         }
     } catch (error) {
-        showToast("Connection failed.", "error");
+        showToast("Network Error", "error");
     }
 }
 
-// Voice Message Handler (For app.js integration)
+// ၈။ Audio ပို့ခြင်း (app.js အတွက်)
 async function fbSendAudioMessage(blob, durationSec, text) {
-    if(text) {
-        await fbSendMessage(text);
-    }
+    if(text) await fbSendMessage(text);
 }
