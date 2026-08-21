@@ -1,378 +1,967 @@
 /* ==========================================================
    OmniTalk PRO v12.0 — firebase-chat.js
-   Real-Time Firebase Firestore Messenger Engine
-   Features: Multi-device sync, Live onSnapshot, Auto-Translate
+   Secure AI & Neural Cross-Language Translation Pipeline
+   Features:
+   - Direct Secure Client-to-Google TLS Calling
+   - Multi-Model Gemini 3.6 / 2.5 / 2.0 / 1.5 Architecture
+   - Google Neural AI Free Fallback Engine
+   - 1:1 Direct Chat & Work Group Chat
+   - Voice Note Recording with Audio & AI Transcribe
 ========================================================== */
 
-// Firebase Firestore နှင့် Auth ချိတ်ဆက်ခြင်း
-let db, auth;
-try {
-    db = firebase.firestore();
-    auth = firebase.auth();
-} catch (e) {
-    console.error("Firebase Initialization Error:", e);
-}
-
-// ၁။ လက်ရှိ User အချက်အလက် (LocalStorage မှ ယူမည် သို့မဟုတ် အသစ်ထုတ်မည်)
-let currentUser = JSON.parse(localStorage.getItem('ot_currentUser')) || {
-    uid: 'ot_' + Math.random().toString(36).substring(2, 9),
-    displayName: 'User ' + Math.floor(100 + Math.random() * 900),
-    friendCode: Math.floor(100000 + Math.random() * 900000).toString(),
-    avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + Math.random().toString(36).substring(2, 7),
-    targetLang: 'my'
-};
-
-let myFriendsCache = [];
+let fbApp = null, fbAuth = null, fbDb = null, fbStorage = null;
+let currentUser = null;
 let activeChatSession = null;
-let currentChatUnsubscribe = null; // Real-time listener ဖြုတ်ရန်
+let activeChatUnsub = null;
+let activeReadingLang = 'my';
+let myFriendsCache = [];
+let myGroupsCache = [];
+let incomingRequestsCache = [];
+let incomingRequestsUnsub = null;
+let nearbyUsersCache = [];
+const translationCache = {};
 
-// ၂။ App စတင်ချိန် User အကောင့်ကို Firestore တွင် Register ပြုလုပ်ခြင်း
-async function fbInit() {
-    localStorage.setItem('ot_currentUser', JSON.stringify(currentUser));
-    
-    // UI ပေါ်ရှိ Friend Code များကို သတ်မှတ်ပေးခြင်း
-    const codeDisplay = document.getElementById('myFriendCodeDisplay');
-    if (codeDisplay) codeDisplay.textContent = currentUser.friendCode;
-    
-    const profileName = document.getElementById('settingsProfileName');
-    if (profileName) profileName.textContent = currentUser.displayName;
-
-    const profileCode = document.getElementById('settingsProfileCode');
-    if (profileCode) profileCode.textContent = 'Friend ID: OT-' + currentUser.friendCode;
-
-    const qrCodeText = document.getElementById('qrCodeFriendId');
-    if (qrCodeText) qrCodeText.textContent = 'ID: OT-' + currentUser.friendCode;
-
-    if (!db) {
-        showToast("Firebase Config မချိတ်ဆက်ရသေးပါ", "error");
-        return;
-    }
-
-    try {
-        // User profile ကို Firestore database ထဲသို့ အမြဲ Update လုပ်မည်
-        await db.collection('users').doc(currentUser.uid).set({
-            uid: currentUser.uid,
-            displayName: currentUser.displayName,
-            friendCode: currentUser.friendCode,
-            avatar: currentUser.avatar,
-            lastSeen: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-
-        // Firebase Connection အောင်မြင်ကြောင်း UI တွင် ပြသခြင်း
-        const badge = document.getElementById('firebaseStatusBadge');
-        if (badge) {
-            badge.textContent = "Connected (Online)";
-            badge.style.color = "#34D399";
-        }
-
-        // သူငယ်ချင်းစာရင်းကို Firestore မှ Real-time စောင့်ကြည့်ယူခြင်း
-        listenToFriendsList();
-    } catch (err) {
-        console.error("Firestore sync error:", err);
-        const badge = document.getElementById('firebaseStatusBadge');
-        if (badge) {
-            badge.textContent = "Offline Mode";
-            badge.style.color = "#EF4444";
-        }
-    }
+function fbReady(){
+  return !!(fbAuth && fbAuth.currentUser && fbDb);
 }
 
-// ၃။ Firestore ပေါ်ရှိ သူငယ်ချင်းစာရင်းကို Real-time နားထောင်ခြင်း
-function listenToFriendsList() {
-    if (!db) return;
-    db.collection('users').doc(currentUser.uid).collection('friends')
-      .onSnapshot(snapshot => {
-          myFriendsCache = [];
-          // Bot အကောင့် အမြဲပါဝင်စေရန်
-          myFriendsCache.push({ uid: 'ai_assistant', displayName: 'Gemini AI', avatar: '🤖', isBot: true, targetLang: 'Myanmar' });
+function isFirebaseConfigured(){
+  return typeof FIREBASE_CONFIG !== 'undefined' &&
+         FIREBASE_CONFIG.apiKey &&
+         !FIREBASE_CONFIG.apiKey.includes('YOUR_FIREBASE_API_KEY');
+}
 
-          snapshot.forEach(doc => {
-              myFriendsCache.push(doc.data());
-          });
+/* Maps a raised error (Firebase SDK error, or a plain string reason we
+   detected ourselves) to a specific, actionable message — instead of
+   silently falling back to local demo mode with no explanation, which
+   made every setup problem indistinguishable from "not configured yet". */
+function fbFriendlyInitError(e){
+  const code = (e && e.code) || '';
+  const msg = (e && e.message) || String(e || '');
+  if(code === 'auth/operation-not-allowed' || /operation-not-allowed/i.test(msg)){
+    return 'Firebase Console → Authentication → Sign-in method → "Anonymous" ကို Enable လုပ်ဖို့ လိုပါတယ်။';
+  }
+  if(code === 'auth/configuration-not-found' || /configuration-not-found/i.test(msg)){
+    return 'Firebase Console → Authentication ကို "Get started" နှိပ်ပြီး setup လုပ်ဖို့ လိုပါတယ် (Authentication တစ်ခါမှ မဖွင့်ရသေးဘူးဖြစ်နိုင်ပါတယ်)။';
+  }
+  if(code === 'auth/invalid-api-key' || code === 'auth/api-key-not-valid' || /api key not valid/i.test(msg)){
+    return 'firebase-config.js ထဲက apiKey မှားနေနိုင်ပါတယ် — Firebase Console → Project Settings → Your apps ထဲက value ကို ပြန်ကူးထည့်ကြည့်ပါ။';
+  }
+  if(/auth\/unauthorized-domain/i.test(msg) || code === 'auth/unauthorized-domain'){
+    return 'ဒီ website domain ကို Firebase Console → Authentication → Settings → Authorized domains ထဲမှာ ထည့်ဖို့ လိုပါတယ်။';
+  }
+  if(code === 'permission-denied' || /Missing or insufficient permissions/i.test(msg)){
+    return 'Firestore Security Rules က ပိတ်ထားနိုင်ပါတယ် — Firebase Console → Firestore Database → Rules ထဲမှာ FIREBASE_SETUP.md ပါ rules ကို ထည့်ပြီး Publish နှိပ်ထားလား စစ်ပါ။';
+  }
+  if(code === 'not-found' || /NOT_FOUND|does not exist/i.test(msg)){
+    return 'Firestore Database ကို Firebase Console → Firestore Database ထဲမှာ "Create database" နှိပ်ပြီး ဖန်တီးဖို့ လိုပါတယ် (config ထည့်ရုံနဲ့ database အလိုအလျောက် ဖြစ်မလာပါ)။';
+  }
+  if(/projectId|project-not-found|Failed to get document because the client is offline/i.test(msg)){
+    return 'projectId (သို့) authDomain မှားနေနိုင်ပါတယ် — Firebase Console ထဲက value တွေနဲ့ ပြန်နှိုင်းစစ်ပါ။';
+  }
+  return `Firebase error: ${code || msg || 'unknown'}`;
+}
 
-          renderFriendsList(myFriendsCache);
-          renderRecentChatsList();
+/** Initialize Firebase & Profile */
+async function fbInit(){
+  activeReadingLang = (typeof state !== 'undefined' && state.uiLanguage) || 'my';
+  const langSelect = document.getElementById('chatReadingLangSelect');
+  if(langSelect) langSelect.value = activeReadingLang;
+
+  if(typeof firebase === 'undefined'){
+    console.warn('Firebase SDK scripts did not load — check your internet connection or whether gstatic.com is blocked on this network.');
+    if(typeof showToast === 'function') showToast('Firebase SDK မ load ဖြစ်ပါ — internet connection (သို့) network firewall ကို စစ်ပေးပါ။ လောလောဆယ် Local mode နဲ့ ဆက်သုံးနေပါမယ်။', 'warn');
+    setupLocalDemoUser('SDK failed to load (network/firewall?)');
+    return false;
+  }
+  if(!isFirebaseConfigured()){
+    setupLocalDemoUser();
+    return false;
+  }
+  try{
+    fbApp = firebase.apps.length ? firebase.app() : firebase.initializeApp(FIREBASE_CONFIG);
+    fbAuth = firebase.auth();
+    fbDb = firebase.firestore();
+    fbStorage = firebase.storage();
+
+    if(!fbAuth.currentUser){
+      await fbAuth.signInAnonymously();
+    }
+    const uid = fbAuth.currentUser.uid;
+    const userDoc = await fbDb.collection('users').doc(uid).get();
+    if(!userDoc.exists){
+      const friendCode = String(Math.floor(100000 + Math.random() * 900000));
+      const defaultName = 'User_' + friendCode.slice(-4);
+      await fbDb.collection('users').doc(uid).set({
+        displayName: defaultName,
+        friendCode,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       });
+      currentUser = { uid, displayName: defaultName, friendCode };
+    } else {
+      currentUser = { uid, ...userDoc.data() };
+    }
+    renderMyProfileCard();
+    fbSetStatusBadge('🟢 Connected', '#34D399');
+    fbListenIncomingRequests();
+    await fbRefreshFriendsCache();
+    fbUpdateMyLocation(); // best-effort, fire-and-forget — only runs if user grants permission
+    return true;
+  }catch(e){
+    console.error('Firebase init error:', e);
+    const reason = fbFriendlyInitError(e);
+    if(typeof showToast === 'function') showToast('⚠️ Firebase ချိတ်ဆက်လို့ မရသေးပါ — ' + reason, 'error');
+    setupLocalDemoUser(reason);
+    return false;
+  }
 }
 
-// ၄။ Friend Code ဖြင့် တကယ့် Online User ကို ရှာဖွေပြီး Add ခြင်း
-async function fbAddFriendByCode(code) {
-    if (!code) return { ok: false };
-    if (code === currentUser.friendCode) return { ok: false, reason: 'self' };
-    if (!db) return { ok: false };
-
-    try {
-        // Firestore တွင် Friend Code တူသော User ကို ရှာဖွေခြင်း
-        const querySnapshot = await db.collection('users').where('friendCode', '==', code.trim()).get();
-
-        if (querySnapshot.empty) {
-            return { ok: false, reason: 'not_found' };
-        }
-
-        let friendDoc = querySnapshot.docs[0];
-        let friendData = friendDoc.data();
-
-        // မိမိ၏ Friends list ထဲသို့ ထည့်သွင်းခြင်း
-        await db.collection('users').doc(currentUser.uid).collection('friends').doc(friendData.uid).set({
-            uid: friendData.uid,
-            displayName: friendData.displayName,
-            avatar: friendData.avatar,
-            friendCode: friendData.friendCode,
-            targetLang: 'Chinese', // Auto-translate အတွက်
-            addedAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-
-        // တစ်ဖက်လူ၏ Friends list ထဲသို့လည်း မိမိအကောင့်ကို အလိုအလျောက် သွားထည့်ပေးခြင်း (Mutual Friend)
-        await db.collection('users').doc(friendData.uid).collection('friends').doc(currentUser.uid).set({
-            uid: currentUser.uid,
-            displayName: currentUser.displayName,
-            avatar: currentUser.avatar,
-            friendCode: currentUser.friendCode,
-            targetLang: 'Myanmar',
-            addedAt: firebase.firestore.FieldValue.serverTimestamp()
-        });
-
-        return { ok: true };
-    } catch (err) {
-        console.error("Add friend error:", err);
-        return { ok: false };
-    }
+function fbSetStatusBadge(text, color){
+  const badge = document.getElementById('firebaseStatusBadge');
+  if(!badge) return;
+  badge.textContent = text;
+  badge.style.color = color;
 }
 
-// ၅။ Chat ခန်းထဲဝင်ခြင်း (Real-time Message Listener ဖွင့်ခြင်း)
-function openChatSession(type, targetId, title) {
-    activeChatSession = { type, targetId, title };
-    const chatRoom = document.getElementById('chatRoomView');
-    const chatTitle = document.getElementById('activeChatTitle');
-
-    if (chatRoom) chatRoom.style.display = 'flex';
-    if (chatTitle) chatTitle.textContent = title;
-
-    if (!db || targetId === 'ai_assistant') {
-        // AI Assistant နှင့် စကားပြောလျှင် LocalStorage ဖြင့်သာ အလုပ်လုပ်မည်
-        const msgs = JSON.parse(localStorage.getItem('ot_demo_messages_' + targetId) || '[]');
-        renderChatMessages(msgs);
-        return;
-    }
-
-    // ဖုန်းနှစ်လုံးကြား တူညီသော Chat ID ဖန်တီးခြင်း (ဥပမာ - uidA_uidB)
-    const chatId = [currentUser.uid, targetId].sort().join('_');
-
-    // ယခင် နားထောင်နေသော Listener ရှိလျှင် ဖြုတ်မည်
-    if (currentChatUnsubscribe) {
-        currentChatUnsubscribe();
-    }
-
-    // Firestore Real-time listener: စာအသစ်ဝင်လာသည်နှင့် ချက်ချင်း UI ပြောင်းလဲစေမည်
-    currentChatUnsubscribe = db.collection('chats').doc(chatId).collection('messages')
-        .orderBy('timestamp', 'asc')
-        .onSnapshot(snapshot => {
-            const msgs = [];
-            snapshot.forEach(doc => msgs.push({ id: doc.id, ...doc.data() }));
-            renderChatMessages(msgs);
-        }, err => {
-            console.error("Chat sync error:", err);
-        });
+function setupLocalDemoUser(reason){
+  let localUid = localStorage.getItem('ot_demo_uid');
+  let localCode = localStorage.getItem('ot_demo_code');
+  if(!localUid || !localCode){
+    localCode = String(Math.floor(100000 + Math.random() * 900000));
+    localUid = 'local_' + localCode;
+    localStorage.setItem('ot_demo_uid', localUid);
+    localStorage.setItem('ot_demo_code', localCode);
+  }
+  currentUser = {
+    uid: localUid,
+    displayName: 'Htet Ko Ko Lin (' + localCode.slice(-4) + ')',
+    friendCode: localCode
+  };
+  renderMyProfileCard();
+  setupDemoChats();
+  fbSetStatusBadge(reason ? `⚠️ Local mode — ${reason}` : '⚪ Local mode (not configured)', '#FBBF24');
 }
 
-// ၆။ Message ပို့ခြင်း နှင့် Gemini Real-time Translation
-async function fbSendMessage(text) {
-    if (!activeChatSession || !text || !text.trim()) return;
+function renderMyProfileCard(){
+  const codeEl = document.getElementById('myFriendCodeDisplay');
+  if(codeEl && currentUser) codeEl.textContent = currentUser.friendCode;
 
-    const targetId = activeChatSession.targetId;
-    const cleanText = text.trim();
-
-    // AI Bot နှင့် ပြောဆိုခြင်း ဖြစ်ပါက
-    if (targetId === 'ai_assistant') {
-        await handleAiBotMessage(cleanText);
-        return;
-    }
-
-    if (!db) {
-        showToast("Database ချိတ်ဆက်မှု မရှိပါ", "error");
-        return;
-    }
-
-    const chatId = [currentUser.uid, targetId].sort().join('_');
-    const friendInfo = myFriendsCache.find(f => f.uid === targetId);
-    const targetLang = friendInfo?.targetLang || "Chinese";
-
-    try {
-        // ၁။ Firestore ပေါ်သို့ Message အရင်တင်မည် (အခြားဖုန်းတွင် စာတန်းရောက်သွားစေရန်)
-        const docRef = await db.collection('chats').doc(chatId).collection('messages').add({
-            senderId: currentUser.uid,
-            senderName: currentUser.displayName,
-            avatar: currentUser.avatar,
-            originalText: cleanText,
-            translatedText: "Translating...",
-            timestamp: Date.now()
-        });
-
-        // ၂။ Gemini API ဖြင့် ဘာသာပြန်ခြင်း
-        if (state.apiKey) {
-            const prompt = `Translate the following message into natural spoken ${targetLang}. Return ONLY the translated sentence with no extra explanations: "${cleanText}"`;
-            
-            const resp = await wkGeminiFetch(state.aiModel, {
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { temperature: 0.2 }
-            });
-
-            if (resp.ok) {
-                const data = await resp.json();
-                const translated = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || cleanText;
-                
-                // ၃။ Firestore ပေါ်ရှိ Message တွင် ဘာသာပြန်ထားသော စာသားအား Update လုပ်ခြင်း
-                await docRef.update({
-                    translatedText: translated
-                });
-            } else {
-                await docRef.update({ translatedText: cleanText });
-            }
-        } else {
-            await docRef.update({ translatedText: cleanText });
-        }
-    } catch (err) {
-        console.error("Message send error:", err);
-        showToast("မက်ဆေ့ခ်ျ ပေးပို့ခြင်း မအောင်မြင်ပါ", "error");
-    }
+  const profNameEl = document.getElementById('settingsProfileName');
+  const profCodeEl = document.getElementById('settingsProfileCode');
+  const profAvatarEl = document.getElementById('settingsProfileAvatar');
+  const qrIdEl = document.getElementById('qrCodeFriendId');
+  if(profNameEl && currentUser) profNameEl.textContent = currentUser.displayName;
+  if(profCodeEl && currentUser) profCodeEl.textContent = 'Friend ID: OT-' + currentUser.friendCode;
+  if(profAvatarEl && currentUser) profAvatarEl.textContent = currentUser.displayName.slice(0, 2).toUpperCase();
+  if(qrIdEl && currentUser) qrIdEl.textContent = 'ID: OT-' + currentUser.friendCode;
 }
 
-// AI Bot စကားပြောဆွေးနွေးမှု
-async function handleAiBotMessage(text) {
-    const storageKey = 'ot_demo_messages_ai_assistant';
-    let msgs = JSON.parse(localStorage.getItem(storageKey) || '[]');
+/* ---------------- Pre-populated Demo Multilingual Chats ---------------- */
+function setupDemoChats(){
+  myFriendsCache = [
+    { uid: 'demo_zh_1', displayName: 'Zhang Wei (Shanghai HQ • 🇨🇳)', friendCode: '881122', lang: 'zh' },
+    { uid: 'demo_th_2', displayName: 'Somchai (Bangkok Ops • 🇹🇭)', friendCode: '334455', lang: 'th' },
+    { uid: 'demo_en_3', displayName: 'Sarah Jenkins (Singapore • 🇺🇸)', friendCode: '556677', lang: 'en' },
+    { uid: 'demo_my_4', displayName: 'Khin Myat Noe (Yangon • 🇲🇲)', friendCode: '990011', lang: 'my' }
+  ];
 
-    msgs.push({
-        id: Date.now().toString(),
-        senderId: currentUser.uid,
-        senderName: currentUser.displayName,
-        avatar: currentUser.avatar,
-        originalText: text,
-        translatedText: '',
-        timestamp: Date.now()
-    });
-    localStorage.setItem(storageKey, JSON.stringify(msgs));
-    renderChatMessages(msgs);
-
-    if (!state.apiKey) {
-        showToast("Gemini API Key ထည့်ရန် လိုအပ်ပါသည်", "warn");
-        return;
+  myGroupsCache = [
+    {
+      id: 'demo_group_1',
+      name: 'Global Tech Team (SG, TH, MM, CN)',
+      members: ['demo_zh_1', 'demo_th_2', 'demo_en_3', currentUser.uid],
+      isGroup: true
     }
+  ];
 
-    try {
-        const resp = await wkGeminiFetch(state.aiModel, {
-            contents: [{ parts: [{ text: `You are a helpful AI assistant in a chat app. Reply directly to: "${text}"` }] }],
-            generationConfig: { temperature: 0.7 }
-        });
+  if(!localStorage.getItem('ot_demo_messages_demo_group_1')){
+    const initialGroupMsgs = [
+      {
+        id: 'msg_1',
+        senderId: 'demo_zh_1',
+        senderName: 'Zhang Wei',
+        sourceLang: 'zh',
+        text: '大家好，新版本 OmniTalk PRO 已经测试完成，大家觉得如何？',
+        timestamp: Date.now() - 3600000
+      },
+      {
+        id: 'msg_2',
+        senderId: 'demo_th_2',
+        senderName: 'Somchai',
+        sourceLang: 'th',
+        text: 'การออกแบบใหม่ยอดเยี่ยมมาก ระบบแปลภาษาแบบเรียลไทม์ทำงานเร็วมาก',
+        isAudio: true,
+        audioText: 'การออกแบบใหม่ยอดเยี่ยมมาก ระบบแปลภาษาแบบเรียลไทม์ทำงานเร็วมาก',
+        duration: '0:12',
+        timestamp: Date.now() - 1800000
+      },
+      {
+        id: 'msg_3',
+        senderId: 'demo_en_3',
+        senderName: 'Sarah Jenkins',
+        sourceLang: 'en',
+        text: 'The cross-language auto-translation is super smooth! Let\'s deploy to production tomorrow morning.',
+        timestamp: Date.now() - 600000
+      }
+    ];
+    localStorage.setItem('ot_demo_messages_demo_group_1', JSON.stringify(initialGroupMsgs));
+  }
 
-        if (resp.ok) {
-            const data = await resp.json();
-            const aiReply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-
-            let updatedMsgs = JSON.parse(localStorage.getItem(storageKey) || '[]');
-            updatedMsgs.push({
-                id: Date.now().toString(),
-                senderId: 'ai_assistant',
-                senderName: 'Gemini AI',
-                avatar: '🤖',
-                originalText: aiReply,
-                translatedText: '',
-                timestamp: Date.now()
-            });
-            localStorage.setItem(storageKey, JSON.stringify(updatedMsgs));
-            renderChatMessages(updatedMsgs);
-        }
-    } catch (e) {
-        showToast("AI ချိတ်ဆက်မှု အခက်အခဲရှိပါသည်", "error");
-    }
+  renderRecentChatsList();
+  renderFriendsList(myFriendsCache);
+  renderGroupsList(myGroupsCache);
 }
 
-// ၇။ UI ပေါ်တွင် Message များကို ပုံဖော်ပြသခြင်း
-function renderChatMessages(msgs) {
-    const container = document.getElementById('chatMessagesContainer');
-    if (!container) return;
+/* ---------------- Friends & Groups ---------------- */
+/* ---------------- Friend Requests (BeeTalk-style: request -> accept, not instant-add) ---------------- */
+async function fbSendFriendRequest(code){
+  const cleanCode = (code || '').trim();
+  if(!cleanCode || cleanCode.length < 6) return { ok: false, reason: 'invalid_code' };
 
-    msgs.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-
-    container.innerHTML = msgs.map(msg => {
-        const isMine = msg.senderId === currentUser.uid;
-        const timeStr = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-        
-        const mainText = isMine ? msg.originalText : (msg.translatedText || msg.originalText);
-        const subText = isMine ? msg.translatedText : msg.originalText;
-        const avatar = isMine ? currentUser.avatar : (msg.avatar || '👤');
-
-        return `
-            <div class="chat-bubble-row ${isMine ? 'mine' : 'theirs'}" style="display:flex; flex-direction:${isMine ? 'row-reverse' : 'row'}; align-items:flex-start; margin-bottom: 14px; gap: 8px; width: 100%;">
-                <img src="${avatar}" alt="avatar" style="width: 38px; height: 38px; border-radius: 50%; object-fit: cover; background: #1e293b; flex-shrink: 0;">
-                
-                <div style="display:flex; flex-direction:column; align-items:${isMine ? 'flex-end' : 'flex-start'}; max-width: 75%;">
-                    <div style="font-size: 0.75rem; color: #94a3b8; margin-bottom: 3px; padding: 0 4px;">${escapeHtml(msg.senderName)}</div>
-                    
-                    <div class="chat-bubble" style="background:${isMine ? '#10b981' : '#334155'}; color:#fff; padding: 10px 14px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">
-                        <div style="font-size: 0.95rem; word-break: break-word;">${escapeHtml(mainText)}</div>
-                        
-                        ${subText && subText !== "Translating..." && subText !== mainText ? `
-                            <div style="font-size: 0.82rem; color: ${isMine ? '#d1fae5' : '#94a3b8'}; margin-top: 6px; border-top: 1px solid ${isMine ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.1)'}; padding-top: 5px;">
-                                ${escapeHtml(subText)}
-                            </div>
-                        ` : ''}
-
-                        ${subText === "Translating..." ? `
-                            <div style="font-size: 0.8rem; color: #38bdf8; margin-top: 4px; font-style: italic;">
-                                ⏳ ဘာသာပြန်နေသည်...
-                            </div>
-                        ` : ''}
-                    </div>
-                    <div style="font-size: 0.68rem; color: #94a3b8; margin-top: 3px; padding: 0 4px;">${timeStr}</div>
-                </div>
-            </div>
-        `;
-    }).join('');
-
-    container.scrollTop = container.scrollHeight;
-}
-
-// Contacts Tab တွင် သူငယ်ချင်းများ ပြသခြင်း
-function renderFriendsList(friends) {
-    const container = document.getElementById('contactsList');
-    if (!container) return;
-
-    if (friends.length === 0) {
-        container.innerHTML = `<div style="text-align:center; color:#94a3b8; padding:20px;">သူငယ်ချင်း မရှိသေးပါ။ Friend Code ဖြင့် Add ပါ။</div>`;
-        return;
-    }
-
-    container.innerHTML = friends.map(friend => `
-        <div onclick="openChatSession('private', '${friend.uid}', '${escapeHtml(friend.displayName)}')" 
-             style="display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer;" 
-             onmouseover="this.style.background='rgba(255,255,255,0.05)'" 
-             onmouseout="this.style.background='transparent'">
-            <img src="${friend.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=' + friend.uid}" 
-                 alt="avatar" style="width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: #1e293b; margin-right: 14px;">
-            <div style="flex: 1;">
-                <div style="font-weight: 600; color: #f8fafc; font-size: 0.95rem; margin-bottom: 2px;">${escapeHtml(friend.displayName)}</div>
-                <div style="font-size: 0.8rem; color: ${friend.isBot ? '#10b981' : '#94a3b8'};">
-                    ${friend.isBot ? '🤖 AI Assistant' : 'ID: ' + (friend.friendCode || 'Online')}
-                </div>
-            </div>
-        </div>
-    `).join('');
-}
-
-// Chats Tab တွင် Recent Chats ပြသခြင်း
-function renderRecentChatsList() {
-    const container = document.getElementById('recentChatsList');
-    if (!container) return;
+  if(!fbReady()){
+    // Local demo mode: no second real user to request, so keep the old
+    // instant-add behavior purely so the UI has something to demo.
+    const mockFriend = {
+      uid: 'demo_' + cleanCode,
+      displayName: 'Colleague (' + cleanCode + ')',
+      friendCode: cleanCode,
+      addedAt: Date.now()
+    };
+    myFriendsCache.push(mockFriend);
     renderFriendsList(myFriendsCache);
+    renderRecentChatsList();
+    return { ok: true, displayName: mockFriend.displayName, friendUid: mockFriend.uid, instant: true };
+  }
+
+  const snap = await fbDb.collection('users').where('friendCode', '==', cleanCode).limit(1).get();
+  if(snap.empty) return { ok: false, reason: 'not_found' };
+  const friendDoc = snap.docs[0];
+  const friendUid = friendDoc.id;
+  if(friendUid === currentUser.uid) return { ok: false, reason: 'self' };
+
+  const alreadyFriend = myFriendsCache.some(f => f.uid === friendUid);
+  if(alreadyFriend) return { ok: false, reason: 'already_friend' };
+
+  // one pending request per pair, keyed by our own uid so it's easy to check/cancel
+  const existing = await fbDb.collection('users').doc(friendUid).collection('incoming_requests').doc(currentUser.uid).get();
+  if(existing.exists) return { ok: false, reason: 'already_sent' };
+
+  await fbDb.collection('users').doc(friendUid).collection('incoming_requests').doc(currentUser.uid).set({
+    fromUid: currentUser.uid,
+    fromName: currentUser.displayName,
+    fromCode: currentUser.friendCode,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  return { ok: true, displayName: friendDoc.data().displayName, friendUid, instant: false };
 }
 
-// Group ဖန်တီးခြင်း
-async function fbCreateGroupChat(name, selectedUids) {
-    showToast("Group '" + name + "' ဖန်တီးပြီးပါပြီ။", "success");
+// Back-compat alias — earlier code/UI referenced this name directly.
+async function fbAddFriendByCode(code){ return fbSendFriendRequest(code); }
+
+function fbListenIncomingRequests(){
+  if(!fbReady()) return;
+  if(incomingRequestsUnsub) incomingRequestsUnsub();
+  incomingRequestsUnsub = fbDb.collection('users').doc(currentUser.uid).collection('incoming_requests')
+    .orderBy('createdAt', 'desc')
+    .onSnapshot((snapshot) => {
+      incomingRequestsCache = [];
+      snapshot.forEach(doc => incomingRequestsCache.push({ id: doc.id, ...doc.data() }));
+      if(typeof renderFriendRequestsList === 'function') renderFriendRequestsList(incomingRequestsCache);
+    });
 }
 
-// Audio Message ပို့ခြင်း
-async function fbSendAudioMessage(blob, durationSec, text) {
-    if (text) await fbSendMessage(text);
+async function fbAcceptFriendRequest(req){
+  if(!fbReady()) return;
+  const myUid = currentUser.uid;
+  const batch = fbDb.batch();
+  batch.set(fbDb.collection('users').doc(myUid).collection('friends').doc(req.fromUid), {
+    displayName: req.fromName || 'Friend',
+    friendCode: req.fromCode || '',
+    addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  batch.set(fbDb.collection('users').doc(req.fromUid).collection('friends').doc(myUid), {
+    displayName: currentUser.displayName,
+    friendCode: currentUser.friendCode,
+    addedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  batch.delete(fbDb.collection('users').doc(myUid).collection('incoming_requests').doc(req.fromUid));
+  await batch.commit();
+  await fbRefreshFriendsCache();
 }
+
+async function fbDeclineFriendRequest(req){
+  if(!fbReady()) return;
+  await fbDb.collection('users').doc(currentUser.uid).collection('incoming_requests').doc(req.fromUid).delete();
+}
+
+async function fbRefreshFriendsCache(){
+  if(!fbReady()) return;
+  const snap = await fbDb.collection('users').doc(currentUser.uid).collection('friends').get();
+  myFriendsCache = snap.docs.map(d => ({ uid: d.id, ...d.data() }));
+  renderFriendsList(myFriendsCache);
+  renderRecentChatsList();
+}
+
+/* ---------------- Nearby / Radar (rounded location, client-side distance) ---------------- */
+function fbHaversineKm(lat1, lon1, lat2, lon2){
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+async function fbUpdateMyLocation(){
+  if(!fbReady() || !navigator.geolocation) return false;
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      try{
+        // Round to ~110m precision — enough for a "nearby" radar feature
+        // without storing anyone's exact pinpoint location.
+        const lat = Math.round(pos.coords.latitude * 1000) / 1000;
+        const lng = Math.round(pos.coords.longitude * 1000) / 1000;
+        await fbDb.collection('users').doc(currentUser.uid).set({
+          location: { lat, lng, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }
+        }, { merge: true });
+        resolve(true);
+      }catch(e){ console.warn('fbUpdateMyLocation failed:', e); resolve(false); }
+    }, (err) => { console.warn('Geolocation denied/failed:', err); resolve(false); }, { timeout: 8000 });
+  });
+}
+
+async function fbFindNearbyUsers(){
+  if(!fbReady()) return [];
+  const mySnap = await fbDb.collection('users').doc(currentUser.uid).get();
+  const myLoc = mySnap.data()?.location;
+  if(!myLoc) return [];
+
+  const snap = await fbDb.collection('users').limit(80).get();
+  const friendUids = new Set(myFriendsCache.map(f => f.uid));
+  const results = [];
+  snap.forEach(doc => {
+    if(doc.id === currentUser.uid) return;
+    if(friendUids.has(doc.id)) return;
+    const data = doc.data();
+    if(!data.location) return;
+    const distKm = fbHaversineKm(myLoc.lat, myLoc.lng, data.location.lat, data.location.lng);
+    results.push({ uid: doc.id, displayName: data.displayName, friendCode: data.friendCode, distKm });
+  });
+  results.sort((a, b) => a.distKm - b.distKm);
+  nearbyUsersCache = results.slice(0, 30);
+  return nearbyUsersCache;
+}
+
+/* ---------------- Shared file/sticker/doodle sender ---------------- */
+async function fbSendFileMessage(fileDataUrl, fileName, fileType, fileSizeLabel, captionText){
+  if(!activeChatSession) return;
+  const senderLang = (typeof state !== 'undefined' && state.uiLanguage) || 'my';
+  const newMsg = {
+    senderId: currentUser.uid,
+    senderName: currentUser.displayName,
+    sourceLang: senderLang,
+    fileData: fileDataUrl,
+    fileName: fileName || 'file',
+    fileType: fileType || 'application/octet-stream',
+    fileSize: fileSizeLabel || '',
+    text: captionText || (fileType && fileType.startsWith('image/') ? 'Photo attachment' : fileName),
+    timestamp: Date.now()
+  };
+
+  if(!fbReady()){
+    const targetId = activeChatSession.targetId;
+    const stored = localStorage.getItem('ot_demo_messages_' + targetId);
+    const msgs = stored ? JSON.parse(stored) : [];
+    msgs.push(newMsg);
+    localStorage.setItem('ot_demo_messages_' + targetId, JSON.stringify(msgs));
+    renderChatMessages(msgs);
+    renderRecentChatsList();
+    return;
+  }
+
+  const collectionPath = activeChatSession.type === 'group'
+    ? fbDb.collection('groups').doc(activeChatSession.targetId).collection('messages')
+    : fbDb.collection('direct_chats').doc(getDirectChatRoomId(currentUser.uid, activeChatSession.targetId)).collection('messages');
+
+  await collectionPath.add({
+    ...newMsg,
+    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+async function fbSendSticker(emoji){
+  if(!activeChatSession) return;
+  const senderLang = (typeof state !== 'undefined' && state.uiLanguage) || 'my';
+  const newMsg = {
+    senderId: currentUser.uid,
+    senderName: currentUser.displayName,
+    sourceLang: senderLang,
+    isSticker: true,
+    stickerEmoji: emoji,
+    text: emoji,
+    timestamp: Date.now()
+  };
+
+  if(!fbReady()){
+    const targetId = activeChatSession.targetId;
+    const stored = localStorage.getItem('ot_demo_messages_' + targetId);
+    const msgs = stored ? JSON.parse(stored) : [];
+    msgs.push(newMsg);
+    localStorage.setItem('ot_demo_messages_' + targetId, JSON.stringify(msgs));
+    renderChatMessages(msgs);
+    renderRecentChatsList();
+    return;
+  }
+
+  const collectionPath = activeChatSession.type === 'group'
+    ? fbDb.collection('groups').doc(activeChatSession.targetId).collection('messages')
+    : fbDb.collection('direct_chats').doc(getDirectChatRoomId(currentUser.uid, activeChatSession.targetId)).collection('messages');
+
+  await collectionPath.add({
+    ...newMsg,
+    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+async function fbCreateGroupChat(groupName, memberUids){
+  const name = (groupName || '').trim() || 'Work Group';
+  const members = Array.from(new Set([...memberUids, currentUser.uid]));
+
+  if(!fbReady()){
+    const newGroup = {
+      id: 'local_group_' + Date.now(),
+      name,
+      members,
+      isGroup: true,
+      createdAt: Date.now()
+    };
+    myGroupsCache.push(newGroup);
+    renderGroupsList(myGroupsCache);
+    renderRecentChatsList();
+    return newGroup.id;
+  }
+
+  const docRef = await fbDb.collection('groups').add({
+    name,
+    members,
+    createdBy: currentUser.uid,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  return docRef.id;
+}
+
+/* ---------------- Real-time Message Engine ---------------- */
+async function openChatSession(type, targetId, title){
+  activeChatSession = { type, targetId, title };
+  
+  const chatRoom = document.getElementById('chatRoomView');
+  const titleEl = document.getElementById('activeChatTitle');
+  if(titleEl) titleEl.textContent = title;
+  if(chatRoom) chatRoom.style.display = 'flex';
+
+  if(typeof pushNavigationState === 'function') pushNavigationState('chatroom');
+
+  const container = document.getElementById('chatMessagesContainer');
+  if(container) container.innerHTML = '<div style="text-align:center; color:var(--text-muted); padding:20px;">⚡ Loading conversation...</div>';
+
+  if(!fbReady()){
+    loadLocalDemoMessages(targetId);
+    return;
+  }
+
+  if(activeChatUnsub) activeChatUnsub();
+
+  const collectionPath = type === 'group'
+    ? fbDb.collection('groups').doc(targetId).collection('messages')
+    : fbDb.collection('direct_chats').doc(getDirectChatRoomId(currentUser.uid, targetId)).collection('messages');
+
+  activeChatUnsub = collectionPath.orderBy('timestamp', 'asc').onSnapshot(async (snapshot) => {
+    const msgs = [];
+    snapshot.forEach(doc => msgs.push({ id: doc.id, ...doc.data() }));
+    await renderChatMessages(msgs);
+  });
+}
+
+function loadLocalDemoMessages(targetId){
+  const stored = localStorage.getItem('ot_demo_messages_' + targetId);
+  const msgs = stored ? JSON.parse(stored) : [];
+  renderChatMessages(msgs);
+}
+
+function getDirectChatRoomId(uid1, uid2){
+  return [uid1, uid2].sort().join('_');
+}
+
+/** Core AI & Neural Translation Engine (High Precision) */
+async function translateMessageOnRead(rawText, sourceLang, targetLang){
+  if(!rawText || !rawText.trim()) return '';
+  if(sourceLang && sourceLang === targetLang) return rawText;
+
+  const cacheKey = `${sourceLang || 'auto'}_${targetLang}_${rawText.trim()}`;
+  if(translationCache[cacheKey]) return translationCache[cacheKey];
+
+  try{
+    let translated = '';
+    const key = (typeof state !== 'undefined' && state.apiKey) ? state.apiKey : '';
+    const model = (typeof state !== 'undefined' && state.aiModel) ? state.aiModel : 'gemini-2.5-flash';
+    const domain = (typeof state !== 'undefined' && state.aiDomain) ? state.aiDomain : 'general';
+
+    // 1. Google Gemini AI Translation (Direct TLS with User's key)
+    if(key){
+      translated = await callGeminiTranslate(rawText, sourceLang, targetLang, key, model, domain);
+    }
+
+    // 2. Google Neural Free Machine Translation (Translates names & idioms accurately)
+    if(!translated){
+      translated = await callGoogleNeuralTranslate(rawText, sourceLang, targetLang);
+    }
+
+    // 3. Offline Dictionary Phrase matching
+    if(!translated){
+      translated = offlineDictionaryTranslate(rawText, sourceLang, targetLang);
+    }
+
+    if(translated){
+      translationCache[cacheKey] = translated;
+      return translated;
+    }
+  }catch(e){
+    console.warn('Translation pipeline notice:', e);
+  }
+  return offlineDictionaryTranslate(rawText, sourceLang, targetLang) || rawText;
+}
+
+/** Client-Side Google Neural Translation */
+async function callGoogleNeuralTranslate(text, src, tgt){
+  try {
+    const s = (!src || src === 'auto') ? 'auto' : src;
+    const t = tgt || 'my';
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${s}&tl=${t}&dt=t&q=${encodeURIComponent(text)}`;
+    const res = await fetch(url);
+    if(res.ok){
+      const data = await res.json();
+      if(Array.isArray(data) && Array.isArray(data[0])){
+        const fullTranslation = data[0].map(item => item[0]).join('').trim();
+        if(fullTranslation) return fullTranslation;
+      }
+    }
+  } catch(e){}
+  return '';
+}
+
+/** Google Gemini Multimodal / Context-Aware Translation */
+async function callGeminiTranslate(text, src, tgt, key, model = 'gemini-2.5-flash', domain = 'general'){
+  const domainPrompts = {
+    general: 'natural human conversation, polite everyday dialogue',
+    workplace: 'workplace operations, factory management, engineering, and overtime tasks',
+    medical: 'medical symptoms, clinics, healthcare, and pharmacy',
+    immigration: 'visa, passport, work permit, and legal immigration matters'
+  };
+  const domainContext = domainPrompts[domain] || domainPrompts.general;
+  
+  const prompt = `You are an expert real-time translator specializing in Southeast Asian and East Asian languages (Burmese/Myanmar, Chinese, Thai, English).
+Translate the following input from language code "${src||'auto'}" into target language code "${tgt}".
+
+Rules:
+1. Preserve natural grammar, colloquial idioms, and polite particles (e.g. in Burmese: ခင်ဗျာ/ရှင်/နော်, in Thai: ครับ/ค่ะ).
+2. For conversational phrases (e.g. "ထမင်းစားပြီးပြီလား?"), translate naturally as "Have you eaten yet?" in English or "你吃饭了吗？" in Chinese or "กินข้าวหรือยังครับ" in Thai.
+3. For personal names (e.g. "Daniel David"), transliterate phonetically (e.g. "ဒန်နီရယ် ဒေးဗစ်" in Burmese, "丹尼尔·大卫" in Chinese, "แดเนียล เดวิด" in Thai) - DO NOT translate names as literal verbs!
+4. Context: ${domainContext}.
+5. Output ONLY the clean translated text without any explanation, quotes or markdown.
+
+Input: "${text}"`;
+  
+  let chosenModel = (typeof wkResolveModel === 'function') ? wkResolveModel(model) : (model || 'gemini-2.5-flash');
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${chosenModel}:generateContent?key=${key}`;
+  
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.1,
+        ...(typeof wkThinkingConfig === 'function' ? wkThinkingConfig(chosenModel) : {})
+      }
+    })
+  });
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+}
+
+function offlineDictionaryTranslate(text, sCode, tCode){
+  const norm = (text || '').trim().toLowerCase();
+  for(const p of PHRASEBOOK){
+    if(p[sCode] && p[sCode].toLowerCase() === norm) return p[tCode] || text;
+    if(p.en && p.en.toLowerCase() === norm) return p[tCode] || text;
+  }
+  for(const p of PHRASES){
+    if(p[sCode] && p[sCode].toLowerCase() === norm) return p[tCode] || text;
+    if(p.en && p.en.toLowerCase() === norm) return p[tCode] || text;
+  }
+  return '';
+}
+
+/** Render Messages in WeChat / DingTalk Stream */
+async function renderChatMessages(messages){
+  const container = document.getElementById('chatMessagesContainer');
+  if(!container) return;
+  container.innerHTML = '';
+
+  if(messages.length === 0){
+    container.innerHTML = `<div style="text-align:center; color:var(--text-dim); padding:40px 20px;">
+      <div style="font-size:32px; margin-bottom:8px;">💬</div>
+      <div>Say hello! OmniTalk auto-translates all messages into your chosen reading language in real-time.</div>
+    </div>`;
+    return;
+  }
+
+  for(const msg of messages){
+    const isMine = msg.senderId === currentUser.uid;
+    const groupEl = document.createElement('div');
+    groupEl.className = `chatMsgGroup ${isMine ? 'mine' : 'theirs'}`;
+
+    if(!isMine && msg.senderName){
+      const senderName = document.createElement('div');
+      senderName.className = 'chatSenderName';
+      senderName.textContent = msg.senderName;
+      groupEl.appendChild(senderName);
+    }
+
+    const bubble = document.createElement('div');
+    bubble.className = 'chatBubble';
+
+    if(msg.isSticker){
+      bubble.classList.add('stickerBubble');
+      bubble.innerHTML = `<div class="stickerEmoji">${escapeHtml(msg.stickerEmoji || msg.text || '')}</div>`;
+    } else if(msg.isAudio){
+      const translatedAudioText = await translateMessageOnRead(msg.audioText, msg.sourceLang, activeReadingLang);
+      bubble.innerHTML = `
+        <div class="audioBubbleWrap">
+          <button class="audioPlayBtn" onclick="speakText('${escapeHtml(translatedAudioText)}', '${activeReadingLang}')">▶</button>
+          <div class="audioWaveform"></div>
+          <span class="audioDuration">${msg.duration || '0:08'}</span>
+        </div>
+        <div class="audioTranscriptBox">
+          <div style="color:#38BDF8; font-weight:700; font-size:11px; margin-bottom:2px;">🎙️ AI Voice Transcribed &amp; Translated [${(msg.sourceLang||'auto').toUpperCase()} ➔ ${activeReadingLang.toUpperCase()}]:</div>
+          <div>${escapeHtml(translatedAudioText)}</div>
+        </div>
+      `;
+    } else if(msg.fileUrl || msg.fileData){
+      const isImg = msg.fileType && msg.fileType.startsWith('image/');
+      if(isImg){
+        bubble.innerHTML = `
+          <div><img src="${msg.fileUrl || msg.fileData}" class="chatImgPreview" alt="Sent photo"></div>
+          <div style="margin-top:4px; font-size:12px;">${escapeHtml(msg.text || '')}</div>
+        `;
+      } else {
+        bubble.innerHTML = `
+          <div class="fileBubbleCard">
+            <span class="fileIcon">📄</span>
+            <div>
+              <div class="fileName">${escapeHtml(msg.fileName || 'Document.pdf')}</div>
+              <div class="fileSize">${msg.fileSize || 'Attachment'}</div>
+            </div>
+          </div>
+        `;
+      }
+    } else {
+      let displayText = msg.text;
+      let isDifferentLang = msg.sourceLang && msg.sourceLang !== activeReadingLang;
+      
+      if(!isMine && isDifferentLang){
+        displayText = await translateMessageOnRead(msg.text, msg.sourceLang, activeReadingLang);
+      }
+
+      const textNode = document.createElement('div');
+      textNode.textContent = displayText;
+      bubble.appendChild(textNode);
+
+      if(!isMine && isDifferentLang && displayText !== msg.text){
+        const origBtn = document.createElement('button');
+        origBtn.className = 'origToggleBtn';
+        origBtn.innerHTML = `<span>🌐 ${t('viewOriginal')} (${(msg.sourceLang||'auto').toUpperCase()})</span>`;
+        
+        const origBox = document.createElement('div');
+        origBox.className = 'origTextBox';
+        origBox.style.display = 'none';
+        origBox.textContent = msg.text;
+
+        origBtn.onclick = () => {
+          const isHidden = origBox.style.display === 'none';
+          origBox.style.display = isHidden ? 'block' : 'none';
+          origBtn.innerHTML = `<span>🌐 ${isHidden ? t('viewTranslated') : t('viewOriginal')}</span>`;
+        };
+
+        bubble.appendChild(origBtn);
+        bubble.appendChild(origBox);
+      }
+    }
+
+    const timeEl = document.createElement('div');
+    timeEl.className = 'chatMsgTime';
+    timeEl.textContent = formatTime(msg.timestamp || Date.now()) + (isMine ? ' ✓✓' : '');
+    bubble.appendChild(timeEl);
+
+    groupEl.appendChild(bubble);
+    container.appendChild(groupEl);
+  }
+
+  container.scrollTop = container.scrollHeight;
+}
+
+/** Send Text Message */
+async function fbSendMessage(text){
+  const clean = (text || '').trim();
+  if(!clean || !activeChatSession) return;
+
+  const senderLang = (typeof state !== 'undefined' && state.uiLanguage) || 'my';
+  const newMsg = {
+    senderId: currentUser.uid,
+    senderName: currentUser.displayName,
+    sourceLang: senderLang,
+    text: clean,
+    timestamp: Date.now()
+  };
+
+  if(!fbReady()){
+    const targetId = activeChatSession.targetId;
+    const stored = localStorage.getItem('ot_demo_messages_' + targetId);
+    const msgs = stored ? JSON.parse(stored) : [];
+    msgs.push(newMsg);
+    localStorage.setItem('ot_demo_messages_' + targetId, JSON.stringify(msgs));
+    renderChatMessages(msgs);
+    renderRecentChatsList();
+
+    triggerDemoAutoReply(targetId);
+    return;
+  }
+
+  const collectionPath = activeChatSession.type === 'group'
+    ? fbDb.collection('groups').doc(activeChatSession.targetId).collection('messages')
+    : fbDb.collection('direct_chats').doc(getDirectChatRoomId(currentUser.uid, activeChatSession.targetId)).collection('messages');
+
+  await collectionPath.add({
+    ...newMsg,
+    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+function triggerDemoAutoReply(targetId){
+  setTimeout(() => {
+    if(!activeChatSession || activeChatSession.targetId !== targetId) return;
+
+    let autoReply = null;
+    if(targetId === 'demo_group_1'){
+      autoReply = {
+        senderId: 'demo_zh_1',
+        senderName: 'Zhang Wei (🇨🇳)',
+        sourceLang: 'zh',
+        text: '收到你的消息了！实时翻译效果非常棒，我们继续测试。',
+        timestamp: Date.now()
+      };
+    } else if(targetId === 'demo_th_2'){
+      autoReply = {
+        senderId: 'demo_th_2',
+        senderName: 'Somchai (🇹🇭)',
+        sourceLang: 'th',
+        text: 'ขอบคุณครับ ได้รับข้อความแล้ว ระบบแปลอัตโนมัติดีมาก',
+        timestamp: Date.now()
+      };
+    } else if(targetId === 'demo_en_3'){
+      autoReply = {
+        senderId: 'demo_en_3',
+        senderName: 'Sarah Jenkins (🇺🇸)',
+        sourceLang: 'en',
+        text: 'Message received! The live AI translation is working seamlessly.',
+        timestamp: Date.now()
+      };
+    } else {
+      autoReply = {
+        senderId: 'demo_my_4',
+        senderName: 'Khin Myat Noe (🇲🇲)',
+        sourceLang: 'my',
+        text: 'မင်္ဂလာပါ! မက်ဆေ့ခ်ျ လက်ခံရရှိပါတယ်ခင်ဗျာ။',
+        timestamp: Date.now()
+      };
+    }
+
+    const stored = localStorage.getItem('ot_demo_messages_' + targetId);
+    const msgs = stored ? JSON.parse(stored) : [];
+    msgs.push(autoReply);
+    localStorage.setItem('ot_demo_messages_' + targetId, JSON.stringify(msgs));
+    renderChatMessages(msgs);
+    renderRecentChatsList();
+    if(typeof showToast === 'function') showToast(`New message from ${autoReply.senderName}`);
+  }, 1400);
+}
+
+/** Send Voice Note Audio */
+async function fbSendAudioMessage(audioBlob, durationSec, transcribedText){
+  if(!activeChatSession) return;
+  const senderLang = (typeof state !== 'undefined' && state.uiLanguage) || 'my';
+
+  const newMsg = {
+    senderId: currentUser.uid,
+    senderName: currentUser.displayName,
+    sourceLang: senderLang,
+    isAudio: true,
+    audioText: transcribedText || 'Voice message',
+    duration: `0:${durationSec < 10 ? '0'+durationSec : durationSec}`,
+    timestamp: Date.now()
+  };
+
+  if(!fbReady()){
+    const targetId = activeChatSession.targetId;
+    const stored = localStorage.getItem('ot_demo_messages_' + targetId);
+    const msgs = stored ? JSON.parse(stored) : [];
+    msgs.push(newMsg);
+    localStorage.setItem('ot_demo_messages_' + targetId, JSON.stringify(msgs));
+    renderChatMessages(msgs);
+    renderRecentChatsList();
+    return;
+  }
+
+  const collectionPath = activeChatSession.type === 'group'
+    ? fbDb.collection('groups').doc(activeChatSession.targetId).collection('messages')
+    : fbDb.collection('direct_chats').doc(getDirectChatRoomId(currentUser.uid, activeChatSession.targetId)).collection('messages');
+
+  await collectionPath.add({
+    ...newMsg,
+    timestamp: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+/* ---------------- Render Feed & UI ---------------- */
+function renderRecentChatsList(){
+  const container = document.getElementById('recentChatsList');
+  if(!container) return;
+  container.innerHTML = '';
+
+  const allChats = [
+    ...myGroupsCache.map(g => ({ id: g.id, title: g.name, isGroup: true, lastMsg: 'Project update specs and UI...', time: '10:45 AM', unread: 2 })),
+    ...myFriendsCache.map(f => ({ id: f.uid, title: f.displayName, isGroup: false, lastMsg: 'Hello! Auto-translated message preview', time: 'Yesterday', unread: 0 }))
+  ];
+
+  if(allChats.length === 0){
+    container.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:30px;">
+      <div style="font-size:32px; margin-bottom:8px;">👥</div>
+      <div>${t('noChats')}</div>
+    </div>`;
+    return;
+  }
+
+  allChats.forEach(chat => {
+    const item = document.createElement('div');
+    item.className = 'chatListItem';
+    item.onclick = () => openChatSession(chat.isGroup ? 'group' : 'direct', chat.id, chat.title);
+
+    item.innerHTML = `
+      <div class="avatarCircle ${chat.isGroup ? 'groupAvatar' : ''}">
+        ${chat.isGroup ? '👥' : chat.title.slice(0, 2).toUpperCase()}
+        ${!chat.isGroup ? '<div class="onlineIndicator"></div>' : ''}
+      </div>
+      <div class="chatItemInfo">
+        <div class="chatItemTopRow">
+          <div class="chatItemTitle">${escapeHtml(chat.title)}</div>
+          <div class="chatItemTime">${chat.time}</div>
+        </div>
+        <div class="chatItemBottomRow">
+          <div class="chatItemSnippet">
+            <span class="transBadge">[Auto ➔ ${activeReadingLang.toUpperCase()}]</span>
+            ${escapeHtml(chat.lastMsg)}
+          </div>
+          ${chat.unread > 0 ? `<div class="unreadBadge">${chat.unread}</div>` : ''}
+        </div>
+      </div>
+    `;
+    container.appendChild(item);
+  });
+}
+
+function renderFriendsList(friends){
+  const container = document.getElementById('contactsList');
+  if(!container) return;
+  container.innerHTML = '';
+
+  if(friends.length === 0){
+    container.innerHTML = `<div style="color:var(--text-muted); padding:16px;">${t('noFriends')}</div>`;
+    return;
+  }
+
+  friends.forEach(f => {
+    const item = document.createElement('div');
+    item.className = 'contactItem';
+    item.onclick = () => openChatSession('direct', f.uid, f.displayName);
+    item.innerHTML = `
+      <div class="avatarCircle">${f.displayName.slice(0, 2).toUpperCase()}</div>
+      <div class="chatItemInfo">
+        <div class="chatItemTitle">${escapeHtml(f.displayName)}</div>
+        <div class="chatItemSnippet" style="color:var(--primary); font-weight:700;">ID: ${f.friendCode}</div>
+      </div>
+    `;
+    container.appendChild(item);
+  });
+}
+
+function renderGroupsList(groups){
+  const container = document.getElementById('groupChatsList');
+  if(!container) return;
+  container.innerHTML = '';
+
+  groups.forEach(g => {
+    const item = document.createElement('div');
+    item.className = 'contactItem';
+    item.onclick = () => openChatSession('group', g.id, g.name);
+    item.innerHTML = `
+      <div class="avatarCircle groupAvatar">👥</div>
+      <div class="chatItemInfo">
+        <div class="chatItemTitle">${escapeHtml(g.name)}</div>
+        <div class="chatItemSnippet">${g.members ? g.members.length : 0} members</div>
+      </div>
+    `;
+    container.appendChild(item);
+  });
+}
+
+function renderFriendRequestsList(requests){
+  const section = document.getElementById('friendRequestsSection');
+  const container = document.getElementById('friendRequestsList');
+  const badge = document.getElementById('friendRequestsBadge');
+  if(!section || !container) return;
+
+  if(!requests || !requests.length){
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = 'block';
+  if(badge) badge.textContent = requests.length;
+  container.innerHTML = '';
+
+  requests.forEach(req => {
+    const item = document.createElement('div');
+    item.className = 'contactItem';
+    item.innerHTML = `
+      <div class="avatarCircle">${(req.fromName || '?').slice(0, 2).toUpperCase()}</div>
+      <div class="chatItemInfo">
+        <div class="chatItemTitle">${escapeHtml(req.fromName || 'Unknown')}</div>
+        <div class="chatItemSnippet">ID: ${escapeHtml(req.fromCode || '')}</div>
+      </div>
+      <div style="display:flex; gap:6px; flex-shrink:0;">
+        <button class="reqAcceptBtn" style="width:34px; height:34px; border-radius:50%; border:none; background:var(--primary); color:#fff; font-size:15px; cursor:pointer;">✓</button>
+        <button class="reqDeclineBtn" style="width:34px; height:34px; border-radius:50%; border:1px solid var(--glass-border); background:rgba(255,255,255,0.06); color:var(--text-muted); font-size:15px; cursor:pointer;">✕</button>
+      </div>
+    `;
+    item.querySelector('.reqAcceptBtn').onclick = async (e) => {
+      e.stopPropagation();
+      await fbAcceptFriendRequest(req);
+      if(typeof showToast === 'function') showToast((typeof t === 'function' ? t('friendAddedSuccess') : 'Friend added!'));
+    };
+    item.querySelector('.reqDeclineBtn').onclick = async (e) => {
+      e.stopPropagation();
+      await fbDeclineFriendRequest(req);
+    };
+    container.appendChild(item);
+  });
+}
+

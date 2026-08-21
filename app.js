@@ -2280,9 +2280,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.querySelectorAll('.modalCancelBtn').forEach(btn => {
     btn.addEventListener('click', () => {
-      if(addModal) addModal.classList.remove('show');
-      if(groupModal) groupModal.classList.remove('show');
-      if(qrModal) qrModal.classList.remove('show');
+      const overlay = btn.closest('.appModalOverlay');
+      if(overlay) overlay.classList.remove('show');
     });
   });
 
@@ -2293,13 +2292,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       showToast('Please enter a 6-digit code', 'error');
       return;
     }
-    const res = await fbAddFriendByCode(code);
+    const res = await fbSendFriendRequest(code);
     if(res.ok){
-      showToast(t('friendAddedSuccess'));
+      showToast(res.instant ? t('friendAddedSuccess') : 'Friend request sent! ⏳');
       if(addModal) addModal.classList.remove('show');
       if(codeInput) codeInput.value = '';
     } else {
-      showToast(res.reason === 'self' ? t('selfAddError') : t('friendNotFound'), 'error');
+      const messages = {
+        self: t('selfAddError'),
+        not_found: t('friendNotFound'),
+        already_friend: 'You are already friends with this person.',
+        already_sent: 'You already sent a request to this person.',
+      };
+      showToast(messages[res.reason] || t('friendNotFound'), 'error');
     }
   });
 
@@ -2378,32 +2383,156 @@ document.addEventListener('DOMContentLoaded', async () => {
     const file = e.target.files?.[0];
     if(!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const isImg = file.type.startsWith('image/');
       if(!activeChatSession) return;
-      
-      const newMsg = {
-        senderId: currentUser.uid,
-        senderName: currentUser.displayName,
-        sourceLang: state.uiLanguage,
-        fileData: reader.result,
-        fileName: file.name,
-        fileType: file.type,
-        fileSize: (file.size / 1024).toFixed(1) + ' KB',
-        text: isImg ? 'Photo attachment' : file.name,
-        timestamp: Date.now()
-      };
-
-      const targetId = activeChatSession.targetId;
-      const stored = localStorage.getItem('ot_demo_messages_' + targetId);
-      const msgs = stored ? JSON.parse(stored) : [];
-      msgs.push(newMsg);
-      localStorage.setItem('ot_demo_messages_' + targetId, JSON.stringify(msgs));
-      renderChatMessages(msgs);
+      await fbSendFileMessage(
+        reader.result, file.name, file.type, (file.size / 1024).toFixed(1) + ' KB',
+        isImg ? 'Photo attachment' : file.name
+      );
       showToast('Attachment sent!');
     };
     reader.readAsDataURL(file);
+    fileInput.value = '';
   });
+
+  // Stickers
+  const stickerModal = document.getElementById('stickerModal');
+  const STICKER_SET = ['😀','😂','😍','😎','👍','👏','🙏','🔥','💯','❤️','😭','😡','🤔','👋','🎉','☕','🍔','🚗','⏰','✅','❌','💪','🙌','😴'];
+  const stickerGrid = document.getElementById('stickerGrid');
+  if(stickerGrid){
+    stickerGrid.innerHTML = STICKER_SET.map(e => `<button class="stickerPickBtn" style="font-size:28px; background:none; border:none; cursor:pointer; padding:6px;">${e}</button>`).join('');
+    stickerGrid.querySelectorAll('.stickerPickBtn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        vibrate(10);
+        await fbSendSticker(btn.textContent);
+        stickerModal?.classList.remove('show');
+      });
+    });
+  }
+  document.getElementById('chatStickerBtn')?.addEventListener('click', () => {
+    pushNavigationState('modal');
+    stickerModal?.classList.add('show');
+  });
+
+  // Doodle
+  const doodleModal = document.getElementById('doodleModal');
+  const doodleCanvas = document.getElementById('doodleCanvas');
+  let doodleCtx = null, doodleDrawing = false, doodleColor = '#000000';
+  function initDoodleCanvas(){
+    if(!doodleCanvas) return;
+    const rect = doodleCanvas.getBoundingClientRect();
+    doodleCanvas.width = rect.width * 2;
+    doodleCanvas.height = rect.height * 2;
+    doodleCtx = doodleCanvas.getContext('2d');
+    doodleCtx.fillStyle = '#fff';
+    doodleCtx.fillRect(0, 0, doodleCanvas.width, doodleCanvas.height);
+    doodleCtx.lineWidth = 6;
+    doodleCtx.lineCap = 'round';
+    doodleCtx.lineJoin = 'round';
+  }
+  function doodlePos(e){
+    const rect = doodleCanvas.getBoundingClientRect();
+    const scaleX = doodleCanvas.width / rect.width;
+    const scaleY = doodleCanvas.height / rect.height;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+  }
+  if(doodleCanvas){
+    const startDraw = (e) => {
+      e.preventDefault();
+      doodleDrawing = true;
+      const p = doodlePos(e);
+      doodleCtx.strokeStyle = doodleColor;
+      doodleCtx.beginPath();
+      doodleCtx.moveTo(p.x, p.y);
+    };
+    const moveDraw = (e) => {
+      if(!doodleDrawing) return;
+      e.preventDefault();
+      const p = doodlePos(e);
+      doodleCtx.lineTo(p.x, p.y);
+      doodleCtx.stroke();
+    };
+    const endDraw = () => { doodleDrawing = false; };
+    doodleCanvas.addEventListener('pointerdown', startDraw);
+    doodleCanvas.addEventListener('pointermove', moveDraw);
+    doodleCanvas.addEventListener('pointerup', endDraw);
+    doodleCanvas.addEventListener('pointercancel', endDraw);
+  }
+  document.getElementById('doodleColorBlack')?.addEventListener('click', (e) => { doodleColor = '#000000'; document.querySelectorAll('.doodleColorBtn').forEach(b=>b.classList.remove('activeColor')); e.target.classList.add('activeColor'); });
+  document.getElementById('doodleColorRed')?.addEventListener('click', (e) => { doodleColor = '#EF4444'; document.querySelectorAll('.doodleColorBtn').forEach(b=>b.classList.remove('activeColor')); e.target.classList.add('activeColor'); });
+  document.getElementById('doodleColorBlue')?.addEventListener('click', (e) => { doodleColor = '#3B82F6'; document.querySelectorAll('.doodleColorBtn').forEach(b=>b.classList.remove('activeColor')); e.target.classList.add('activeColor'); });
+  document.getElementById('doodleColorGreen')?.addEventListener('click', (e) => { doodleColor = '#10B981'; document.querySelectorAll('.doodleColorBtn').forEach(b=>b.classList.remove('activeColor')); e.target.classList.add('activeColor'); });
+  document.getElementById('doodleClearBtn')?.addEventListener('click', () => {
+    if(!doodleCtx) return;
+    doodleCtx.fillStyle = '#fff';
+    doodleCtx.fillRect(0, 0, doodleCanvas.width, doodleCanvas.height);
+  });
+  document.getElementById('chatDoodleBtn')?.addEventListener('click', () => {
+    pushNavigationState('modal');
+    doodleModal?.classList.add('show');
+    setTimeout(initDoodleCanvas, 50);
+  });
+  document.getElementById('doodleSendBtn')?.addEventListener('click', async () => {
+    if(!doodleCanvas) return;
+    const dataUrl = doodleCanvas.toDataURL('image/png');
+    await fbSendFileMessage(dataUrl, 'doodle.png', 'image/png', '', '🎨 Doodle');
+    doodleModal?.classList.remove('show');
+    showToast('Doodle sent!');
+  });
+
+  // Nearby / Radar
+  const nearbyView = document.getElementById('nearbyView');
+  document.getElementById('btnOpenNearby')?.addEventListener('click', async () => {
+    if(nearbyView) nearbyView.style.display = 'flex';
+    if(typeof pushNavigationState === 'function') pushNavigationState('chatroom');
+    await loadNearbyPeople();
+  });
+  document.getElementById('closeNearbyBtn')?.addEventListener('click', () => {
+    if(nearbyView) nearbyView.style.display = 'none';
+  });
+  document.getElementById('refreshNearbyBtn')?.addEventListener('click', loadNearbyPeople);
+
+  async function loadNearbyPeople(){
+    const list = document.getElementById('nearbyList');
+    if(!list) return;
+    if(typeof fbReady !== 'function' || !fbReady()){
+      list.innerHTML = `<div style="text-align:center; color:var(--text-dim); padding:30px;">Nearby feature က Firebase ချိတ်ဆက်ထားမှသာ အလုပ်လုပ်ပါတယ်။</div>`;
+      return;
+    }
+    list.innerHTML = `<div style="text-align:center; color:var(--text-muted); padding:20px;">📍 ရှာဖွေနေသည်...</div>`;
+    const gotLocation = await fbUpdateMyLocation();
+    if(!gotLocation){
+      list.innerHTML = `<div style="text-align:center; color:var(--text-dim); padding:30px;">Location ခွင့်ပြုချက် လိုအပ်ပါတယ် — Browser location permission ကို ခွင့်ပြုပြီး ပြန်စမ်းကြည့်ပါ။</div>`;
+      return;
+    }
+    const nearby = await fbFindNearbyUsers();
+    if(!nearby.length){
+      list.innerHTML = `<div style="text-align:center; color:var(--text-dim); padding:30px;">အနီးအနားမှာ ရှာမတွေ့သေးပါ — App သုံးနေတဲ့ တခြားသူများ ရှိလာရင် ဒီနေရာမှာ ပေါ်လာပါလိမ့်မယ်။</div>`;
+      return;
+    }
+    list.innerHTML = '';
+    nearby.forEach(person => {
+      const row = document.createElement('div');
+      row.className = 'nearbyPersonRow';
+      row.innerHTML = `
+        <div class="avatarCircle">${(person.displayName||'?').slice(0,2).toUpperCase()}</div>
+        <div class="chatItemInfo">
+          <div class="chatItemTitle">${escapeHtml(person.displayName || 'User')}</div>
+          <div class="nearbyDist">📍 ${person.distKm < 1 ? Math.round(person.distKm*1000)+'m' : person.distKm.toFixed(1)+'km'} away</div>
+        </div>
+        <button class="nearbyAddBtn">Add</button>
+      `;
+      row.querySelector('.nearbyAddBtn').addEventListener('click', async () => {
+        const res = await fbSendFriendRequest(person.friendCode);
+        if(res.ok) showToast('Friend request sent!');
+        else showToast(res.reason === 'already_sent' ? 'Request already sent' : 'Could not send request', 'error');
+      });
+      list.appendChild(row);
+    });
+  }
 
   // Audio Voice Recording in Chat
   setupVoiceRecorder();
