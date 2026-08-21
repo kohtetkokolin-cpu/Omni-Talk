@@ -19,11 +19,13 @@
        referrers) — restrict this key to your real domain(s).
    Set those two up once and this file is safe to keep in your repo.
 ========================================================== */
-const FIREBASE_CONFIG = {
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
   apiKey: "AIzaSyCuSnW084iY-6-1UUH3CarAy3__XFQowXs",
   authDomain: "omni-talk-messenger.firebaseapp.com",
   projectId: "omni-talk-messenger",
   storageBucket: "omni-talk-messenger.firebasestorage.app",
   messagingSenderId: "668979617067",
-  appId: "G-ZG5TC3KB93"
+  appId: "1:668979617067:web:1452ed9684328fea43b96e",
+  measurementId: "G-8HDBQJBKQ6"
 };
