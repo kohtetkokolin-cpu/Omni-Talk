@@ -25,5 +25,6 @@ const FIREBASE_CONFIG = {
   projectId: "omni-talk-messenger",
   storageBucket: "omni-talk-messenger.firebasestorage.app",
   messagingSenderId: "668979617067",
-  appId: "G-ZG5TC3KB93"
+  appId: "",
+  measurementId: "G-ZG5TC3KB93"
 };
