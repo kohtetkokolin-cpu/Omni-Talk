@@ -382,10 +382,17 @@ async function fbSendFileMessage(fileDataUrl, fileName, fileType, fileSizeLabel,
     ? fbDb.collection('groups').doc(activeChatSession.targetId).collection('messages')
     : fbDb.collection('direct_chats').doc(getDirectChatRoomId(currentUser.uid, activeChatSession.targetId)).collection('messages');
 
-  await collectionPath.add({
-    ...newMsg,
-    timestamp: firebase.firestore.FieldValue.serverTimestamp()
-  });
+  try{
+    await collectionPath.add({
+      ...newMsg,
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  }catch(e){
+    /* A blocked write (Firestore rules, offline, quota) used to vanish as an
+       unhandled rejection — the sender saw nothing at all. */
+    console.error('Message send failed:', e);
+    if(typeof showToast === 'function') showToast('⚠️ Message failed to send — ' + fbFriendlyInitError(e), 'error');
+  }
 }
 
 async function fbSendSticker(emoji){
@@ -416,10 +423,17 @@ async function fbSendSticker(emoji){
     ? fbDb.collection('groups').doc(activeChatSession.targetId).collection('messages')
     : fbDb.collection('direct_chats').doc(getDirectChatRoomId(currentUser.uid, activeChatSession.targetId)).collection('messages');
 
-  await collectionPath.add({
-    ...newMsg,
-    timestamp: firebase.firestore.FieldValue.serverTimestamp()
-  });
+  try{
+    await collectionPath.add({
+      ...newMsg,
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  }catch(e){
+    /* A blocked write (Firestore rules, offline, quota) used to vanish as an
+       unhandled rejection — the sender saw nothing at all. */
+    console.error('Message send failed:', e);
+    if(typeof showToast === 'function') showToast('⚠️ Message failed to send — ' + fbFriendlyInitError(e), 'error');
+  }
 }
 
 async function fbCreateGroupChat(groupName, memberUids){
@@ -478,6 +492,17 @@ async function openChatSession(type, targetId, title){
     const msgs = [];
     snapshot.forEach(doc => msgs.push({ id: doc.id, ...doc.data() }));
     await renderChatMessages(msgs);
+  }, (err) => {
+    /* Surface listener failures (e.g. Firestore rules blocking reads) instead
+       of leaving the room stuck on "Loading conversation..." forever. */
+    console.error('Chat listener error:', err);
+    if(container){
+      container.innerHTML = `<div style="text-align:center; color:var(--danger); padding:24px 16px;">
+        <div style="font-size:28px; margin-bottom:8px;">⚠️</div>
+        <div>${escapeHtml(fbFriendlyInitError(err))}</div>
+      </div>`;
+    }
+    if(typeof showToast === 'function') showToast('⚠️ ' + fbFriendlyInitError(err), 'error');
   });
 }
 
@@ -602,6 +627,16 @@ function offlineDictionaryTranslate(text, sCode, tCode){
   return '';
 }
 
+/* Normalize any timestamp shape into JS milliseconds:
+   - Firestore serverTimestamp() arrives as a Timestamp object (has .toMillis)
+   - Local demo messages store plain numbers
+   Without this, formatTime() receives an object and renders "NaN:NaN AM". */
+function toMillis(ts){
+  if(ts && typeof ts.toMillis === 'function') return ts.toMillis();
+  if(typeof ts === 'number') return ts;
+  return Date.now();
+}
+
 /** Render Messages in WeChat / DingTalk Stream */
 async function renderChatMessages(messages){
   const container = document.getElementById('chatMessagesContainer');
@@ -638,7 +673,6 @@ async function renderChatMessages(messages){
       const translatedAudioText = await translateMessageOnRead(msg.audioText, msg.sourceLang, activeReadingLang);
       bubble.innerHTML = `
         <div class="audioBubbleWrap">
-          <button class="audioPlayBtn" onclick="speakText('${escapeHtml(translatedAudioText)}', '${activeReadingLang}')">▶</button>
           <div class="audioWaveform"></div>
           <span class="audioDuration">${msg.duration || '0:08'}</span>
         </div>
@@ -647,6 +681,17 @@ async function renderChatMessages(messages){
           <div>${escapeHtml(translatedAudioText)}</div>
         </div>
       `;
+      /* Bind play via closure instead of an inline onclick="" string:
+         apostrophes/quotes inside the translated text used to break the
+         attribute and silently kill the voice-playback button. */
+      const wrapEl = bubble.querySelector('.audioBubbleWrap');
+      if(wrapEl){
+        const playBtn = document.createElement('button');
+        playBtn.className = 'audioPlayBtn';
+        playBtn.textContent = '▶';
+        playBtn.onclick = () => speakText(translatedAudioText, activeReadingLang);
+        wrapEl.prepend(playBtn);
+      }
     } else if(msg.fileUrl || msg.fileData){
       const isImg = msg.fileType && msg.fileType.startsWith('image/');
       if(isImg){
@@ -700,7 +745,7 @@ async function renderChatMessages(messages){
 
     const timeEl = document.createElement('div');
     timeEl.className = 'chatMsgTime';
-    timeEl.textContent = formatTime(msg.timestamp || Date.now()) + (isMine ? ' ✓✓' : '');
+    timeEl.textContent = formatTime(toMillis(msg.timestamp)) + (isMine ? ' ✓✓' : '');
     bubble.appendChild(timeEl);
 
     groupEl.appendChild(bubble);
@@ -741,10 +786,17 @@ async function fbSendMessage(text){
     ? fbDb.collection('groups').doc(activeChatSession.targetId).collection('messages')
     : fbDb.collection('direct_chats').doc(getDirectChatRoomId(currentUser.uid, activeChatSession.targetId)).collection('messages');
 
-  await collectionPath.add({
-    ...newMsg,
-    timestamp: firebase.firestore.FieldValue.serverTimestamp()
-  });
+  try{
+    await collectionPath.add({
+      ...newMsg,
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  }catch(e){
+    /* A blocked write (Firestore rules, offline, quota) used to vanish as an
+       unhandled rejection — the sender saw nothing at all. */
+    console.error('Message send failed:', e);
+    if(typeof showToast === 'function') showToast('⚠️ Message failed to send — ' + fbFriendlyInitError(e), 'error');
+  }
 }
 
 function triggerDemoAutoReply(targetId){
@@ -826,10 +878,17 @@ async function fbSendAudioMessage(audioBlob, durationSec, transcribedText){
     ? fbDb.collection('groups').doc(activeChatSession.targetId).collection('messages')
     : fbDb.collection('direct_chats').doc(getDirectChatRoomId(currentUser.uid, activeChatSession.targetId)).collection('messages');
 
-  await collectionPath.add({
-    ...newMsg,
-    timestamp: firebase.firestore.FieldValue.serverTimestamp()
-  });
+  try{
+    await collectionPath.add({
+      ...newMsg,
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  }catch(e){
+    /* A blocked write (Firestore rules, offline, quota) used to vanish as an
+       unhandled rejection — the sender saw nothing at all. */
+    console.error('Message send failed:', e);
+    if(typeof showToast === 'function') showToast('⚠️ Message failed to send — ' + fbFriendlyInitError(e), 'error');
+  }
 }
 
 /* ---------------- Render Feed & UI ---------------- */
